@@ -354,14 +354,19 @@ class PomoApp(ctk.CTk):
         entry.bind("<Escape>", cancel)
         entry.focus_set()
 
-    def _add_session(self, name: str):
+    def _add_session(self, name: str, auto_start: bool = True):
         self.sessions.append({"name": name, "done": False})
-        # If this is the first session and we're idle, activate it
+        # If this is the first session and we're idle, activate and start it
         if self.current_index == -1:
             self.current_index = 0
             self.session_type = SessionType.WORK
             self.remaining_seconds = WORK_MINUTES * 60
             self.total_seconds = self.remaining_seconds
+            if auto_start:
+                self._rebuild_session_list()
+                self._update_display()
+                self._start_timer()
+                return
         self._rebuild_session_list()
         self._update_display()
 
