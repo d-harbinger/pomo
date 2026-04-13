@@ -20,6 +20,7 @@ except ImportError:
 DATA_DIR = Path(os.environ.get("POMO_DATA_DIR", Path.home() / ".local" / "share" / "pomo"))
 STATS_FILE = DATA_DIR / "stats.json"
 HISTORY_FILE = DATA_DIR / "history.json"
+PREFS_FILE = DATA_DIR / "prefs.json"
 
 DEFAULT_WORK = 25
 DEFAULT_SHORT_BREAK = 5
@@ -58,24 +59,61 @@ class TimerState(Enum):
     PAUSED = "paused"
 
 
-# ── Colors ───────────────────────────────────────────────────────────────────
+# ── Themes ───────────────────────────────────────────────────────────────────
 
-C = {
-    "bg": "#1a1a2e",
-    "surface": "#16213e",
-    "surface_light": "#1f3056",
-    "work": "#e94560",
-    "work_dim": "#8b2a3a",
-    "break": "#0f9b58",
-    "break_dim": "#0a6b3d",
-    "long_break": "#4a90d9",
-    "long_break_dim": "#2d5a8a",
-    "text": "#eaeaea",
-    "text_dim": "#8892a0",
-    "text_muted": "#5a6474",
-    "done": "#3a4a5a",
-    "done_text": "#6a7a8a",
+THEMES = {
+    "midnight": {
+        "bg": "#1a1a2e", "surface": "#16213e", "surface_light": "#1f3056",
+        "work": "#e94560", "work_dim": "#8b2a3a",
+        "break": "#0f9b58", "break_dim": "#0a6b3d",
+        "long_break": "#4a90d9", "long_break_dim": "#2d5a8a",
+        "text": "#eaeaea", "text_dim": "#8892a0", "text_muted": "#5a6474",
+        "done": "#3a4a5a", "done_text": "#6a7a8a",
+    },
+    "ember": {
+        "bg": "#1a1614", "surface": "#2a211c", "surface_light": "#3a2d24",
+        "work": "#ff7a45", "work_dim": "#a04828",
+        "break": "#d4a574", "break_dim": "#8a6b4a",
+        "long_break": "#c69a5e", "long_break_dim": "#7d6140",
+        "text": "#f4ecd8", "text_dim": "#a8998a", "text_muted": "#6a5d50",
+        "done": "#3a312a", "done_text": "#7a6d60",
+    },
+    "forest": {
+        "bg": "#0f1a14", "surface": "#17271e", "surface_light": "#20362a",
+        "work": "#5cc78a", "work_dim": "#2f7a4f",
+        "break": "#8fb48d", "break_dim": "#5a7759",
+        "long_break": "#6fb8c9", "long_break_dim": "#417480",
+        "text": "#e8f0e4", "text_dim": "#8fa598", "text_muted": "#566b5f",
+        "done": "#2a3a30", "done_text": "#6a8576",
+    },
+    "ocean": {
+        "bg": "#0d1b2a", "surface": "#1b2a3c", "surface_light": "#2a3d52",
+        "work": "#5eb3ff", "work_dim": "#2d6a9e",
+        "break": "#76d5c7", "break_dim": "#3e8a80",
+        "long_break": "#a78bfa", "long_break_dim": "#6b52a8",
+        "text": "#e4ecf5", "text_dim": "#8ea0b4", "text_muted": "#546578",
+        "done": "#2a3a4a", "done_text": "#6b7e92",
+    },
+    "mono": {
+        "bg": "#141414", "surface": "#1f1f1f", "surface_light": "#2a2a2a",
+        "work": "#e8e8e8", "work_dim": "#8a8a8a",
+        "break": "#a8a8a8", "break_dim": "#6a6a6a",
+        "long_break": "#888888", "long_break_dim": "#555555",
+        "text": "#f0f0f0", "text_dim": "#a0a0a0", "text_muted": "#606060",
+        "done": "#333333", "done_text": "#707070",
+    },
+    "plum": {
+        "bg": "#1a1320", "surface": "#271d33", "surface_light": "#362a48",
+        "work": "#d070d0", "work_dim": "#803a80",
+        "break": "#9b5fc9", "break_dim": "#5e3a80",
+        "long_break": "#ef8fa8", "long_break_dim": "#95546a",
+        "text": "#efe4f5", "text_dim": "#a598b4", "text_muted": "#655878",
+        "done": "#322a3f", "done_text": "#7d6e90",
+    },
 }
+
+# Active theme dict — mutated in place so widgets look up current values
+C = dict(THEMES["midnight"])
 
 
 # ── Notifications ────────────────────────────────────────────────────────────
@@ -257,7 +295,16 @@ class PomoApp(ctk.CTk):
         self.sessions = []
         self.current_index = -1
         self.work_sessions_completed = 0
-        self._showing_stats = False
+        self._view = "sessions"  # "sessions" | "stats" | "themes"
+
+        # Load saved theme
+        prefs = load_json(PREFS_FILE, {})
+        theme_name = prefs.get("theme", "midnight")
+        if theme_name in THEMES:
+            self.theme_name = theme_name
+            C.update(THEMES[theme_name])
+        else:
+            self.theme_name = "midnight"
 
         self.title("Pomo")
         self.configure(fg_color=C["bg"])
@@ -280,6 +327,12 @@ class PomoApp(ctk.CTk):
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_stats)
         self.stats_toggle_btn.pack(side="right")
+
+        ctk.CTkButton(
+            top, text="🎨", width=36, height=36, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_themes
+        ).pack(side="right", padx=(0, 4))
 
         # ── Timer ────────────────────────────────────────────────────────
         self.ring = RingCanvas(self, size=240)
@@ -394,17 +447,93 @@ class PomoApp(ctk.CTk):
         for widget in self.bottom.winfo_children():
             widget.destroy()
 
-    # ── Stats view ───────────────────────────────────────────────────────
+    # ── View switching ───────────────────────────────────────────────────
+
+    def _show_view(self, view: str):
+        self._view = view
+        self._clear_bottom()
+        if view == "sessions":
+            self._build_session_view()
+        elif view == "stats":
+            self._build_stats_view()
+        elif view == "themes":
+            self._build_theme_view()
 
     def _toggle_stats(self):
-        if self._showing_stats:
-            self._showing_stats = False
-            self._clear_bottom()
-            self._build_session_view()
-        else:
-            self._showing_stats = True
-            self._clear_bottom()
-            self._build_stats_view()
+        self._show_view("sessions" if self._view == "stats" else "stats")
+
+    def _toggle_themes(self):
+        self._show_view("sessions" if self._view == "themes" else "themes")
+
+    # ── Theme view ───────────────────────────────────────────────────────
+
+    def _build_theme_view(self):
+        scroll = ScrollFrame(self.bottom)
+        scroll.pack(fill="both", expand=True, padx=20, pady=(4, 4))
+        inner = scroll.inner
+
+        header = ctk.CTkFrame(inner, fg_color="transparent")
+        header.pack(fill="x", pady=(4, 8), padx=4)
+        ctk.CTkLabel(header, text="Theme", font=("Inter", 14, "bold"),
+                     text_color=C["text"]).pack(side="left")
+        ctk.CTkButton(header, text="← Back", width=60, height=26, font=("Inter", 11),
+                      corner_radius=13, fg_color=C["surface"], hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=lambda: self._show_view("sessions")).pack(side="right")
+
+        for name, theme in THEMES.items():
+            card = ctk.CTkFrame(inner, fg_color=theme["surface"], corner_radius=10,
+                                border_width=2,
+                                border_color=theme["work"] if name == self.theme_name else theme["surface"])
+            card.pack(fill="x", pady=4, padx=4)
+
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x", padx=10, pady=(8, 4))
+
+            ctk.CTkLabel(top_row, text=name.capitalize(),
+                         font=("Inter", 13, "bold"),
+                         text_color=theme["text"]).pack(side="left")
+
+            if name == self.theme_name:
+                ctk.CTkLabel(top_row, text="✓ active", font=("Inter", 10),
+                             text_color=theme["work"]).pack(side="right")
+            else:
+                ctk.CTkButton(top_row, text="Apply", width=60, height=22,
+                              font=("Inter", 10),
+                              corner_radius=11,
+                              fg_color=theme["work"], hover_color=theme["work_dim"],
+                              text_color="#ffffff",
+                              command=lambda n=name: self._apply_theme(n)
+                              ).pack(side="right")
+
+            # Color swatches
+            swatches = ctk.CTkFrame(card, fg_color="transparent")
+            swatches.pack(fill="x", padx=10, pady=(0, 10))
+            for key in ("work", "break", "long_break", "text", "surface_light"):
+                sw = ctk.CTkFrame(swatches, fg_color=theme[key], width=28, height=16,
+                                  corner_radius=3)
+                sw.pack(side="left", padx=2)
+                sw.pack_propagate(False)
+
+        scroll.bind_scroll_recursive()
+
+    def _apply_theme(self, name: str):
+        self.theme_name = name
+        C.update(THEMES[name])
+
+        # Persist
+        prefs = load_json(PREFS_FILE, {})
+        prefs["theme"] = name
+        save_json(PREFS_FILE, prefs)
+
+        # Rebuild entire UI
+        for widget in self.winfo_children():
+            widget.destroy()
+        self.configure(fg_color=C["bg"])
+        self._build_ui()
+        self._update_display()
+        # Re-enter theme view so user sees the change
+        self._show_view("themes")
 
     def _build_stats_view(self):
         scroll = ScrollFrame(self.bottom)
