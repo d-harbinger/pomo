@@ -89,29 +89,6 @@ def notify(title: str, message: str):
         pass
 
 
-# ── Scroll fix for Linux ────────────────────────────────────────────────────
-
-def _bind_mousewheel(scrollable_frame):
-    """Bind mousewheel to a CTkScrollableFrame so scrolling works on Linux."""
-    parent = scrollable_frame._parent_canvas
-
-    def _on_wheel(event):
-        parent.yview_scroll(-1 if event.delta > 0 or event.num == 4 else 1, "units")
-
-    def _bind_recursive(widget):
-        widget.bind("<Button-4>", _on_wheel, add="+")
-        widget.bind("<Button-5>", _on_wheel, add="+")
-        widget.bind("<MouseWheel>", _on_wheel, add="+")
-        for child in widget.winfo_children():
-            _bind_recursive(child)
-
-    _bind_recursive(scrollable_frame)
-
-    # Also bind new children as they appear
-    orig_pack = scrollable_frame._scrollbar.pack_info  # just a marker that it's built
-    scrollable_frame._mousewheel_hook = (_on_wheel, _bind_recursive)
-
-
 # ── Ring canvas ──────────────────────────────────────────────────────────────
 
 class RingCanvas(ctk.CTkCanvas):
@@ -144,46 +121,32 @@ class RingCanvas(ctk.CTkCanvas):
 # ── Session row widget ───────────────────────────────────────────────────────
 
 class SessionRow(ctk.CTkFrame):
-    """A single row in the session queue."""
-
     def __init__(self, master, name: str, index: int, is_active: bool, is_done: bool,
                  on_remove=None, **kwargs):
         super().__init__(master, fg_color="transparent", height=36, **kwargs)
         self.pack_propagate(False)
 
         if is_done:
-            dot_color = C["done"]
-            text_color = C["done_text"]
-            marker = "✓"
+            dot_color, text_color, marker = C["done"], C["done_text"], "✓"
         elif is_active:
-            dot_color = C["work"]
-            text_color = C["text"]
-            marker = "▸"
+            dot_color, text_color, marker = C["work"], C["text"], "▸"
         else:
-            dot_color = C["text_muted"]
-            text_color = C["text_dim"]
-            marker = "○"
+            dot_color, text_color, marker = C["text_muted"], C["text_dim"], "○"
 
-        # Status marker
         ctk.CTkLabel(self, text=marker, font=("Inter", 14), width=24,
                      text_color=dot_color, fg_color="transparent").pack(side="left", padx=(4, 2))
-
-        # Session number
         ctk.CTkLabel(self, text=f"{index + 1}.", font=("Inter", 12), width=24,
                      text_color=C["text_muted"], fg_color="transparent").pack(side="left")
-
-        # Name
         ctk.CTkLabel(self, text=name, font=("Inter", 13),
                      text_color=text_color, fg_color="transparent",
                      anchor="w").pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-        # Remove button (only for pending sessions)
         if not is_done and not is_active and on_remove:
-            btn = ctk.CTkButton(self, text="×", width=24, height=24,
-                                font=("Inter", 14), corner_radius=12,
-                                fg_color="transparent", hover_color=C["surface_light"],
-                                text_color=C["text_muted"], command=on_remove)
-            btn.pack(side="right", padx=(0, 4))
+            ctk.CTkButton(self, text="×", width=24, height=24,
+                          font=("Inter", 14), corner_radius=12,
+                          fg_color="transparent", hover_color=C["surface_light"],
+                          text_color=C["text_muted"], command=on_remove
+                          ).pack(side="right", padx=(0, 4))
 
 
 # ── Stats tracker ────────────────────────────────────────────────────────────
@@ -225,6 +188,57 @@ class Stats:
         return self.data["total_minutes"]
 
 
+# ── Scrollable frame with working Linux scroll ──────────────────────────────
+
+class ScrollFrame(ctk.CTkFrame):
+    """A manually-built scrollable frame that works on Linux."""
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+
+        self.canvas = ctk.CTkCanvas(self, bg=C["bg"], highlightthickness=0)
+        self.inner = ctk.CTkFrame(self.canvas, fg_color="transparent")
+
+        self.canvas.pack(fill="both", expand=True)
+        self._window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+
+        # Bind scroll to canvas AND propagate from all children
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            self.canvas.bind(seq, self._on_scroll)
+            self.bind(seq, self._on_scroll)
+
+    def _on_inner_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self._window, width=event.width)
+
+    def _on_scroll(self, event):
+        # Check if content is taller than canvas
+        bbox = self.canvas.bbox("all")
+        if bbox and bbox[3] - bbox[1] > self.canvas.winfo_height():
+            if event.num == 4 or (hasattr(event, 'delta') and event.delta > 0):
+                self.canvas.yview_scroll(-3, "units")
+            elif event.num == 5 or (hasattr(event, 'delta') and event.delta < 0):
+                self.canvas.yview_scroll(3, "units")
+
+    def bind_scroll_recursive(self):
+        """Call after adding children to propagate scroll events."""
+        def _bind(widget):
+            for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+                widget.bind(seq, self._on_scroll, add="+")
+            for child in widget.winfo_children():
+                _bind(child)
+        _bind(self.inner)
+
+    def clear(self):
+        for widget in self.inner.winfo_children():
+            widget.destroy()
+
+
 # ── Main app ─────────────────────────────────────────────────────────────────
 
 class PomoApp(ctk.CTk):
@@ -240,9 +254,8 @@ class PomoApp(ctk.CTk):
         self.total_seconds = self.remaining_seconds
         self._tick_id = None
 
-        # Session queue: list of {"name": str, "done": bool}
         self.sessions = []
-        self.current_index = -1  # -1 = no sessions queued
+        self.current_index = -1
         self.work_sessions_completed = 0
         self._showing_stats = False
 
@@ -262,10 +275,11 @@ class PomoApp(ctk.CTk):
         ctk.CTkLabel(top, text="pomo", font=("Inter", 20, "bold"),
                      text_color=C["text"]).pack(side="left")
 
-        ctk.CTkButton(top, text="📊", width=36, height=36, font=("Inter", 16),
-                      fg_color="transparent", hover_color=C["surface_light"],
-                      text_color=C["text_dim"],
-                      command=self._open_stats).pack(side="right")
+        self.stats_toggle_btn = ctk.CTkButton(
+            top, text="📊", width=36, height=36, font=("Inter", 16),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_stats)
+        self.stats_toggle_btn.pack(side="right")
 
         # ── Timer ────────────────────────────────────────────────────────
         self.ring = RingCanvas(self, size=240)
@@ -294,17 +308,14 @@ class PomoApp(ctk.CTk):
                       text_color=C["text_dim"],
                       command=self._skip_session).pack(side="left", padx=5)
 
-        # ── Duration steppers ─────────────────────────────────────────────
+        # ── Duration steppers ────────────────────────────────────────────
         dur_frame = ctk.CTkFrame(self, fg_color="transparent")
         dur_frame.pack(fill="x", padx=28, pady=(4, 4))
 
         self.dur_labels = {}
-        steppers = [
-            ("Focus", "work", C["work"]),
-            ("Short", "short_break", C["break"]),
-            ("Long", "long_break", C["long_break"]),
-        ]
-        for label, key, color in steppers:
+        for label, key, color in [("Focus", "work", C["work"]),
+                                   ("Short", "short_break", C["break"]),
+                                   ("Long", "long_break", C["long_break"])]:
             col = ctk.CTkFrame(dur_frame, fg_color="transparent")
             col.pack(side="left", expand=True)
 
@@ -317,14 +328,14 @@ class PomoApp(ctk.CTk):
             ctk.CTkButton(row, text="−", width=22, height=22, font=("Inter", 13),
                           corner_radius=11, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
-                          command=lambda k=key: self._adjust_duration(k, -5)).pack(side="left", padx=1)
+                          command=lambda k=key: self._adjust_duration(k, -5)
+                          ).pack(side="left", padx=1)
 
             dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 12, "bold"),
                                    text_color=color, width=36, cursor="sb_v_double_arrow")
             dur_lbl.pack(side="left", padx=2)
             self.dur_labels[key] = dur_lbl
 
-            # Drag to adjust: up = increase, down = decrease, 5m per 30px
             dur_lbl.bind("<Button-1>", lambda e, k=key: self._drag_start(e, k))
             dur_lbl.bind("<B1-Motion>", self._drag_motion)
             dur_lbl.bind("<ButtonRelease-1>", self._drag_end)
@@ -332,7 +343,8 @@ class PomoApp(ctk.CTk):
             ctk.CTkButton(row, text="+", width=22, height=22, font=("Inter", 13),
                           corner_radius=11, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
-                          command=lambda k=key: self._adjust_duration(k, 5)).pack(side="left", padx=1)
+                          command=lambda k=key: self._adjust_duration(k, 5)
+                          ).pack(side="left", padx=1)
 
         self._update_dur_labels()
 
@@ -340,8 +352,27 @@ class PomoApp(ctk.CTk):
         ctk.CTkFrame(self, fg_color=C["surface_light"], height=1).pack(
             fill="x", padx=24, pady=(4, 4))
 
-        # ── Session queue header ─────────────────────────────────────────
-        self.session_header = ctk.CTkFrame(self, fg_color="transparent")
+        # ── Bottom container (swaps between sessions and stats) ──────────
+        self.bottom = ctk.CTkFrame(self, fg_color="transparent")
+        self.bottom.pack(fill="both", expand=True, padx=0, pady=0)
+
+        self._build_session_view()
+
+        # ── Today stats bar ──────────────────────────────────────────────
+        self.stats_bar = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=12, height=40)
+        self.stats_bar.pack(fill="x", padx=24, pady=(4, 12))
+        self.stats_bar.pack_propagate(False)
+
+        self.today_label = ctk.CTkLabel(self.stats_bar, text="", font=("Inter", 11),
+                                        text_color=C["text_dim"])
+        self.today_label.pack(expand=True)
+        self._update_today_stats()
+
+    # ── Session view ─────────────────────────────────────────────────────
+
+    def _build_session_view(self):
+        # Header
+        self.session_header = ctk.CTkFrame(self.bottom, fg_color="transparent")
         self.session_header.pack(fill="x", padx=24, pady=(4, 0))
 
         ctk.CTkLabel(self.session_header, text="Sessions", font=("Inter", 14, "bold"),
@@ -353,35 +384,84 @@ class PomoApp(ctk.CTk):
                       text_color="#ffffff",
                       command=self._add_session_prompt).pack(side="right")
 
-        # ── Session list ─────────────────────────────────────────────────
-        self.session_list = ctk.CTkScrollableFrame(
-            self, fg_color="transparent", height=160)
-        self.session_list.pack(fill="both", expand=True, padx=20, pady=(4, 4))
-        _bind_mousewheel(self.session_list)
+        # Scrollable list
+        self.session_scroll = ScrollFrame(self.bottom)
+        self.session_scroll.pack(fill="both", expand=True, padx=20, pady=(4, 4))
 
-        # Empty state message
-        self.empty_label = ctk.CTkLabel(
-            self.session_list,
-            text="Press + to plan your sessions",
-            font=("Inter", 12),
-            text_color=C["text_muted"],
-        )
-        self.empty_label.pack(pady=20)
+        self._rebuild_session_list()
 
-        # ── Today stats ──────────────────────────────────────────────────
-        self.stats_bar = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=12, height=40)
-        self.stats_bar.pack(fill="x", padx=24, pady=(4, 12))
-        self.stats_bar.pack_propagate(False)
+    def _clear_bottom(self):
+        for widget in self.bottom.winfo_children():
+            widget.destroy()
 
-        self.today_label = ctk.CTkLabel(self.stats_bar, text="", font=("Inter", 11),
-                                        text_color=C["text_dim"])
-        self.today_label.pack(expand=True)
-        self._update_today_stats()
+    # ── Stats view ───────────────────────────────────────────────────────
+
+    def _toggle_stats(self):
+        if self._showing_stats:
+            self._showing_stats = False
+            self._clear_bottom()
+            self._build_session_view()
+        else:
+            self._showing_stats = True
+            self._clear_bottom()
+            self._build_stats_view()
+
+    def _build_stats_view(self):
+        scroll = ScrollFrame(self.bottom)
+        scroll.pack(fill="both", expand=True, padx=20, pady=(4, 4))
+        inner = scroll.inner
+
+        # Header with back
+        header = ctk.CTkFrame(inner, fg_color="transparent")
+        header.pack(fill="x", pady=(4, 8), padx=4)
+        ctk.CTkLabel(header, text="Stats", font=("Inter", 14, "bold"),
+                     text_color=C["text"]).pack(side="left")
+        ctk.CTkButton(header, text="← Back", width=60, height=26, font=("Inter", 11),
+                      corner_radius=13, fg_color=C["surface"], hover_color=C["surface_light"],
+                      text_color=C["text_dim"], command=self._toggle_stats).pack(side="right")
+
+        # Cards
+        cards = ctk.CTkFrame(inner, fg_color="transparent")
+        cards.pack(fill="x", pady=(0, 8), padx=4)
+
+        total_hrs = self.stats.total_minutes / 60
+        items = [
+            ("Total sessions", str(self.stats.total_sessions)),
+            ("Total focus", f"{total_hrs:.1f}h"),
+            ("Today sessions", str(self.stats.today["sessions"])),
+            ("Today focus", f"{int(self.stats.today['minutes'])}m"),
+        ]
+        for i, (label, value) in enumerate(items):
+            card = ctk.CTkFrame(cards, fg_color=C["surface"], corner_radius=10)
+            card.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="nsew")
+            cards.grid_columnconfigure(i % 2, weight=1)
+            ctk.CTkLabel(card, text=value, font=("Inter", 18, "bold"),
+                         text_color=C["text"]).pack(pady=(8, 1))
+            ctk.CTkLabel(card, text=label, font=("Inter", 10),
+                         text_color=C["text_dim"]).pack(pady=(0, 8))
+
+        # History
+        ctk.CTkLabel(inner, text="Recent", font=("Inter", 12, "bold"),
+                     text_color=C["text"]).pack(anchor="w", pady=(4, 2), padx=4)
+
+        history = load_json(HISTORY_FILE, [])
+        if not history:
+            ctk.CTkLabel(inner, text="No sessions yet", font=("Inter", 11),
+                         text_color=C["text_muted"]).pack(pady=8, padx=4)
+        else:
+            for entry in reversed(history[-20:]):
+                row = ctk.CTkFrame(inner, fg_color="transparent")
+                row.pack(fill="x", pady=1, padx=4)
+                ctk.CTkLabel(row, text=f"{entry.get('date', '')} {entry.get('time', '')}",
+                             font=("Inter", 10), text_color=C["text_muted"]).pack(side="left")
+                ctk.CTkLabel(row, text=f"{entry.get('task', '')} · {entry.get('minutes', 0)}m",
+                             font=("Inter", 10), text_color=C["text_dim"]).pack(side="right")
+
+        scroll.bind_scroll_recursive()
 
     # ── Session queue management ─────────────────────────────────────────
 
     def _add_session_prompt(self):
-        # If an inline entry already exists, focus it instead of creating another
         if hasattr(self, "_inline_entry") and self._inline_entry is not None:
             try:
                 self._inline_entry.focus_set()
@@ -389,8 +469,8 @@ class PomoApp(ctk.CTk):
             except Exception:
                 self._inline_entry = None
 
-        # Create inline entry row at the bottom of the session list
-        row = ctk.CTkFrame(self.session_list, fg_color=C["surface"], corner_radius=8, height=36)
+        row = ctk.CTkFrame(self.session_scroll.inner, fg_color=C["surface"],
+                           corner_radius=8, height=36)
         row.pack(fill="x", pady=(4, 2), padx=2)
         row.pack_propagate(False)
 
@@ -424,7 +504,6 @@ class PomoApp(ctk.CTk):
 
     def _add_session(self, name: str, auto_start: bool = True):
         self.sessions.append({"name": name, "done": False})
-        # If this is the first session and we're idle, activate and start it
         if self.current_index == -1:
             self.current_index = 0
             self.session_type = SessionType.WORK
@@ -441,16 +520,13 @@ class PomoApp(ctk.CTk):
     def _remove_session(self, index: int):
         if index < len(self.sessions):
             self.sessions.pop(index)
-            # Adjust current_index
             if len(self.sessions) == 0:
                 self.current_index = -1
             elif index < self.current_index:
                 self.current_index -= 1
             elif index == self.current_index:
-                # Removed the active one — clamp to valid or -1
                 if self.current_index >= len(self.sessions):
                     self.current_index = len(self.sessions) - 1
-                # Find next undone session
                 found = False
                 for i in range(self.current_index, len(self.sessions)):
                     if not self.sessions[i]["done"]:
@@ -463,58 +539,36 @@ class PomoApp(ctk.CTk):
             self._update_display()
 
     def _rebuild_session_list(self):
-        for widget in self.session_list.winfo_children():
-            widget.destroy()
+        self.session_scroll.clear()
+        inner = self.session_scroll.inner
 
         if not self.sessions:
-            self.empty_label = ctk.CTkLabel(
-                self.session_list,
-                text="Press + to plan your sessions",
-                font=("Inter", 12),
-                text_color=C["text_muted"],
-            )
-            self.empty_label.pack(pady=20)
+            ctk.CTkLabel(inner, text="Press + to plan your sessions",
+                         font=("Inter", 12), text_color=C["text_muted"]
+                         ).pack(pady=20)
             return
 
         for i, session in enumerate(self.sessions):
             is_active = (i == self.current_index)
             is_done = session["done"]
 
-            # Show break indicator between work sessions
+            # Break indicators between sessions
             if i > 0 and not self.sessions[i - 1]["done"] and not is_done:
-                break_label = "Long Break" if (self._count_done_before(i) + 1) % LONG_BREAK_EVERY == 0 else "Short Break"
-                brk = ctk.CTkFrame(self.session_list, fg_color="transparent", height=20)
+                n_done = sum(1 for s in self.sessions[:i] if s["done"])
+                break_label = "Long Break" if (n_done + 1) % LONG_BREAK_EVERY == 0 else "Short Break"
+                brk = ctk.CTkFrame(inner, fg_color="transparent", height=20)
                 brk.pack(fill="x")
                 brk.pack_propagate(False)
-                color = C["long_break"] if "Long" in break_label else C["break"]
+                clr = C["long_break"] if "Long" in break_label else C["break"]
                 ctk.CTkLabel(brk, text=f"  ╴ {break_label}", font=("Inter", 10),
-                             text_color=color, fg_color="transparent").pack(side="left", padx=(20, 0))
-            elif i > 0 and self.sessions[i - 1]["done"] and is_active:
-                # Break between last done and current active
-                break_label = "Short Break"
-                if self.session_type in (SessionType.SHORT_BREAK, SessionType.LONG_BREAK):
-                    break_label = "Long Break" if self.session_type == SessionType.LONG_BREAK else "Short Break"
-                    brk = ctk.CTkFrame(self.session_list, fg_color="transparent", height=20)
-                    brk.pack(fill="x")
-                    brk.pack_propagate(False)
-                    color = C["long_break"] if "Long" in break_label else C["break"]
-                    ctk.CTkLabel(brk, text=f"  ╴ {break_label} ◂", font=("Inter", 10),
-                                 text_color=color, fg_color="transparent").pack(side="left", padx=(20, 0))
+                             text_color=clr).pack(side="left", padx=(20, 0))
 
-            row = SessionRow(
-                self.session_list,
-                name=session["name"],
-                index=i,
-                is_active=is_active,
-                is_done=is_done,
-                on_remove=lambda idx=i: self._remove_session(idx),
-            )
-            row.pack(fill="x", pady=1)
+            SessionRow(inner, name=session["name"], index=i,
+                       is_active=is_active, is_done=is_done,
+                       on_remove=lambda idx=i: self._remove_session(idx)
+                       ).pack(fill="x", pady=1)
 
-        _bind_mousewheel(self.session_list)
-
-    def _count_done_before(self, index: int) -> int:
-        return sum(1 for s in self.sessions[:index] if s["done"])
+        self.session_scroll.bind_scroll_recursive()
 
     # ── Timer logic ──────────────────────────────────────────────────────
 
@@ -532,10 +586,9 @@ class PomoApp(ctk.CTk):
     def _drag_motion(self, event):
         if not hasattr(self, "_drag_key") or self._drag_key is None:
             return
-        dy = self._drag_y - event.y_root  # up = positive
+        dy = self._drag_y - event.y_root
         self._drag_accum += dy
         self._drag_y = event.y_root
-        # Every 30px of drag = 5 minutes
         steps = int(self._drag_accum / 30)
         if steps != 0:
             self._drag_accum -= steps * 30
@@ -547,11 +600,10 @@ class PomoApp(ctk.CTk):
     def _adjust_duration(self, key: str, delta: int):
         self.durations[key] = max(5, self.durations[key] + delta)
         self._update_dur_labels()
-        # If we're idle on this type, update the timer to match
         if self.timer_state == TimerState.IDLE:
-            type_key = {"work": SessionType.WORK, "short_break": SessionType.SHORT_BREAK,
+            type_map = {"work": SessionType.WORK, "short_break": SessionType.SHORT_BREAK,
                         "long_break": SessionType.LONG_BREAK}
-            if self.session_type == type_key[key]:
+            if self.session_type == type_map[key]:
                 self.remaining_seconds = self.durations[key] * 60
                 self.total_seconds = self.remaining_seconds
                 self._update_display()
@@ -611,7 +663,6 @@ class PomoApp(ctk.CTk):
         self.start_btn.configure(text="Start")
 
         if self.session_type == SessionType.WORK:
-            # Mark current session done (if queued) or record standalone
             if 0 <= self.current_index < len(self.sessions):
                 task_name = self.sessions[self.current_index]["name"]
                 self.sessions[self.current_index]["done"] = True
@@ -620,10 +671,8 @@ class PomoApp(ctk.CTk):
             self.stats.record_session(self.durations["work"], task_name)
             self._update_today_stats()
             self.work_sessions_completed += 1
-
             notify("Pomo", f"Done: {task_name}")
 
-            # Transition to break
             if self.work_sessions_completed % LONG_BREAK_EVERY == 0:
                 self.session_type = SessionType.LONG_BREAK
                 self.remaining_seconds = self.durations["long_break"] * 60
@@ -635,17 +684,13 @@ class PomoApp(ctk.CTk):
             self._rebuild_session_list()
             self._update_display()
             self._update_button_color()
-
-            # Auto-start break
             self._start_timer()
 
         else:
-            # Break finished — advance to next session
             notify("Pomo", "Break's over — time to focus!")
             self._advance_to_next()
 
     def _advance_to_next(self):
-        # Find next undone session
         next_idx = -1
         for i in range(len(self.sessions)):
             if not self.sessions[i]["done"]:
@@ -681,7 +726,6 @@ class PomoApp(ctk.CTk):
 
         if self.session_type == SessionType.WORK and 0 <= self.current_index < len(self.sessions):
             label = self.sessions[self.current_index]["name"]
-            # Truncate long names for the ring
             if len(label) > 24:
                 label = label[:22] + "…"
             color, dim = C["work"], C["work_dim"]
@@ -706,74 +750,6 @@ class PomoApp(ctk.CTk):
         time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
         self.today_label.configure(
             text=f"Today:  {sessions} session{'s' if sessions != 1 else ''}  ·  {time_str} focused")
-
-    # ── Stats view (inline toggle) ──────────────────────────────────────
-
-    def _open_stats(self):
-        if self._showing_stats:
-            self._hide_stats()
-            return
-
-        self._showing_stats = True
-        # Hide session UI
-        self.session_header.pack_forget()
-        self.session_list.pack_forget()
-
-        # Build stats panel in the same area
-        self.stats_panel = ctk.CTkScrollableFrame(self, fg_color="transparent", height=200)
-        self.stats_panel.pack(fill="both", expand=True, padx=20, pady=(4, 4),
-                              before=self.stats_bar)
-        _bind_mousewheel(self.stats_panel)
-
-        # Back button row
-        back_row = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
-        back_row.pack(fill="x", pady=(0, 8))
-        ctk.CTkLabel(back_row, text="Stats", font=("Inter", 14, "bold"),
-                     text_color=C["text"]).pack(side="left")
-        ctk.CTkButton(back_row, text="← Back", width=60, height=26, font=("Inter", 11),
-                      corner_radius=13, fg_color=C["surface"], hover_color=C["surface_light"],
-                      text_color=C["text_dim"], command=self._hide_stats).pack(side="right")
-
-        # Stat cards
-        cards = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
-        cards.pack(fill="x", pady=(0, 8))
-
-        total_hrs = self.stats.total_minutes / 60
-        items = [
-            ("Total sessions", str(self.stats.total_sessions)),
-            ("Total focus", f"{total_hrs:.1f}h"),
-            ("Today sessions", str(self.stats.today["sessions"])),
-            ("Today focus", f"{int(self.stats.today['minutes'])}m"),
-        ]
-        for i, (label, value) in enumerate(items):
-            card = ctk.CTkFrame(cards, fg_color=C["surface"], corner_radius=10)
-            card.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="nsew")
-            cards.grid_columnconfigure(i % 2, weight=1)
-            ctk.CTkLabel(card, text=value, font=("Inter", 18, "bold"),
-                         text_color=C["text"]).pack(pady=(8, 1))
-            ctk.CTkLabel(card, text=label, font=("Inter", 10),
-                         text_color=C["text_dim"]).pack(pady=(0, 8))
-
-        # Recent history
-        ctk.CTkLabel(self.stats_panel, text="Recent", font=("Inter", 12, "bold"),
-                     text_color=C["text"]).pack(anchor="w", pady=(4, 2))
-
-        for entry in reversed(load_json(HISTORY_FILE, [])[-15:]):
-            row = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
-            row.pack(fill="x", pady=1)
-            ctk.CTkLabel(row, text=f"{entry.get('date', '')} {entry.get('time', '')}",
-                         font=("Inter", 10), text_color=C["text_muted"]).pack(side="left")
-            ctk.CTkLabel(row, text=f"{entry.get('task', '')} · {entry.get('minutes', 0)}m",
-                         font=("Inter", 10), text_color=C["text_dim"]).pack(side="right")
-
-    def _hide_stats(self):
-        self._showing_stats = False
-        if hasattr(self, "stats_panel"):
-            self.stats_panel.destroy()
-        # Restore session UI
-        self.session_header.pack(fill="x", padx=24, pady=(4, 0), before=self.stats_bar)
-        self.session_list.pack(fill="both", expand=True, padx=20, pady=(4, 4),
-                               before=self.stats_bar)
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
