@@ -219,6 +219,7 @@ class PomoApp(ctk.CTk):
         self.sessions = []
         self.current_index = -1  # -1 = no sessions queued
         self.work_sessions_completed = 0
+        self._showing_stats = False
 
         self.title("Pomo")
         self.configure(fg_color=C["bg"])
@@ -273,14 +274,14 @@ class PomoApp(ctk.CTk):
             fill="x", padx=24, pady=(8, 4))
 
         # ── Session queue header ─────────────────────────────────────────
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=24, pady=(4, 0))
+        self.session_header = ctk.CTkFrame(self, fg_color="transparent")
+        self.session_header.pack(fill="x", padx=24, pady=(4, 0))
 
-        ctk.CTkLabel(header, text="Sessions", font=("Inter", 14, "bold"),
+        ctk.CTkLabel(self.session_header, text="Sessions", font=("Inter", 14, "bold"),
                      text_color=C["text"]).pack(side="left")
 
-        ctk.CTkButton(header, text="+", width=32, height=28, font=("Inter", 16, "bold"),
-                      corner_radius=14,
+        ctk.CTkButton(self.session_header, text="+", width=32, height=28,
+                      font=("Inter", 16, "bold"), corner_radius=14,
                       fg_color=C["work"], hover_color=C["work_dim"],
                       text_color="#ffffff",
                       command=self._add_session_prompt).pack(side="right")
@@ -300,11 +301,11 @@ class PomoApp(ctk.CTk):
         self.empty_label.pack(pady=20)
 
         # ── Today stats ──────────────────────────────────────────────────
-        stats_bar = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=12, height=40)
-        stats_bar.pack(fill="x", padx=24, pady=(4, 12))
-        stats_bar.pack_propagate(False)
+        self.stats_bar = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=12, height=40)
+        self.stats_bar.pack(fill="x", padx=24, pady=(4, 12))
+        self.stats_bar.pack_propagate(False)
 
-        self.today_label = ctk.CTkLabel(stats_bar, text="", font=("Inter", 11),
+        self.today_label = ctk.CTkLabel(self.stats_bar, text="", font=("Inter", 11),
                                         text_color=C["text_dim"])
         self.today_label.pack(expand=True)
         self._update_today_stats()
@@ -312,38 +313,46 @@ class PomoApp(ctk.CTk):
     # ── Session queue management ─────────────────────────────────────────
 
     def _add_session_prompt(self):
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("New Session")
-        dialog.geometry("320x150")
-        dialog.configure(fg_color=C["bg"])
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
+        # If an inline entry already exists, focus it instead of creating another
+        if hasattr(self, "_inline_entry") and self._inline_entry is not None:
+            try:
+                self._inline_entry.focus_set()
+                return
+            except Exception:
+                self._inline_entry = None
 
-        ctk.CTkLabel(dialog, text="What's your intent?", font=("Inter", 14, "bold"),
-                     text_color=C["text"]).pack(pady=(20, 8))
+        # Create inline entry row at the bottom of the session list
+        row = ctk.CTkFrame(self.session_list, fg_color=C["surface"], corner_radius=8, height=36)
+        row.pack(fill="x", pady=(4, 2), padx=2)
+        row.pack_propagate(False)
 
         entry = ctk.CTkEntry(
-            dialog, placeholder_text="e.g. Refactor auth module",
-            font=("Inter", 13), height=38, width=260,
+            row, placeholder_text="What's your intent?",
+            font=("Inter", 13), height=32,
             fg_color=C["surface"], border_color=C["surface_light"],
-            text_color=C["text"], placeholder_text_color=C["text_muted"])
-        entry.pack(padx=24)
-        entry.focus_set()
+            text_color=C["text"], placeholder_text_color=C["text_muted"],
+            border_width=0)
+        entry.pack(side="left", fill="x", expand=True, padx=(8, 4))
+
+        self._inline_entry = entry
+        self._inline_row = row
 
         def submit(event=None):
             name = entry.get().strip()
+            self._inline_entry = None
+            self._inline_row = None
+            row.destroy()
             if name:
                 self._add_session(name)
-            dialog.destroy()
+
+        def cancel(event=None):
+            self._inline_entry = None
+            self._inline_row = None
+            row.destroy()
 
         entry.bind("<Return>", submit)
-
-        ctk.CTkButton(dialog, text="Add", font=("Inter", 13, "bold"),
-                      width=80, height=34, corner_radius=17,
-                      fg_color=C["work"], hover_color=C["work_dim"],
-                      text_color="#ffffff",
-                      command=submit).pack(pady=(12, 0))
+        entry.bind("<Escape>", cancel)
+        entry.focus_set()
 
     def _add_session(self, name: str):
         self.sessions.append({"name": name, "done": False})
@@ -588,54 +597,72 @@ class PomoApp(ctk.CTk):
         self.today_label.configure(
             text=f"Today:  {sessions} session{'s' if sessions != 1 else ''}  ·  {time_str} focused")
 
-    # ── Stats dialog ─────────────────────────────────────────────────────
+    # ── Stats view (inline toggle) ──────────────────────────────────────
 
     def _open_stats(self):
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Stats")
-        dialog.geometry("360x400")
-        dialog.configure(fg_color=C["bg"])
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
+        if self._showing_stats:
+            self._hide_stats()
+            return
 
-        ctk.CTkLabel(dialog, text="Stats", font=("Inter", 18, "bold"),
-                     text_color=C["text"]).pack(pady=(16, 12))
+        self._showing_stats = True
+        # Hide session UI
+        self.session_header.pack_forget()
+        self.session_list.pack_forget()
 
-        cards = ctk.CTkFrame(dialog, fg_color="transparent")
-        cards.pack(fill="x", padx=24, pady=8)
+        # Build stats panel in the same area
+        self.stats_panel = ctk.CTkScrollableFrame(self, fg_color="transparent", height=200)
+        self.stats_panel.pack(fill="both", expand=True, padx=20, pady=(4, 4),
+                              before=self.stats_bar)
+
+        # Back button row
+        back_row = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
+        back_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(back_row, text="Stats", font=("Inter", 14, "bold"),
+                     text_color=C["text"]).pack(side="left")
+        ctk.CTkButton(back_row, text="← Back", width=60, height=26, font=("Inter", 11),
+                      corner_radius=13, fg_color=C["surface"], hover_color=C["surface_light"],
+                      text_color=C["text_dim"], command=self._hide_stats).pack(side="right")
+
+        # Stat cards
+        cards = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
+        cards.pack(fill="x", pady=(0, 8))
 
         total_hrs = self.stats.total_minutes / 60
         items = [
             ("Total sessions", str(self.stats.total_sessions)),
-            ("Total focus time", f"{total_hrs:.1f} hours"),
+            ("Total focus", f"{total_hrs:.1f}h"),
             ("Today sessions", str(self.stats.today["sessions"])),
-            ("Today focus", f"{int(self.stats.today['minutes'])} min"),
+            ("Today focus", f"{int(self.stats.today['minutes'])}m"),
         ]
-
         for i, (label, value) in enumerate(items):
             card = ctk.CTkFrame(cards, fg_color=C["surface"], corner_radius=10)
-            card.grid(row=i // 2, column=i % 2, padx=6, pady=6, sticky="nsew")
+            card.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="nsew")
             cards.grid_columnconfigure(i % 2, weight=1)
-            ctk.CTkLabel(card, text=value, font=("Inter", 22, "bold"),
-                         text_color=C["text"]).pack(pady=(12, 2))
-            ctk.CTkLabel(card, text=label, font=("Inter", 11),
-                         text_color=C["text_dim"]).pack(pady=(0, 12))
+            ctk.CTkLabel(card, text=value, font=("Inter", 18, "bold"),
+                         text_color=C["text"]).pack(pady=(8, 1))
+            ctk.CTkLabel(card, text=label, font=("Inter", 10),
+                         text_color=C["text_dim"]).pack(pady=(0, 8))
 
-        ctk.CTkLabel(dialog, text="Recent Sessions", font=("Inter", 14, "bold"),
-                     text_color=C["text"]).pack(pady=(12, 4), padx=24, anchor="w")
+        # Recent history
+        ctk.CTkLabel(self.stats_panel, text="Recent", font=("Inter", 12, "bold"),
+                     text_color=C["text"]).pack(anchor="w", pady=(4, 2))
 
-        history_frame = ctk.CTkScrollableFrame(dialog, fg_color=C["surface"],
-                                                corner_radius=10, height=140)
-        history_frame.pack(fill="x", padx=24, pady=(0, 16))
-
-        for entry in reversed(load_json(HISTORY_FILE, [])[-20:]):
-            row = ctk.CTkFrame(history_frame, fg_color="transparent")
-            row.pack(fill="x", pady=2)
+        for entry in reversed(load_json(HISTORY_FILE, [])[-15:]):
+            row = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
+            row.pack(fill="x", pady=1)
             ctk.CTkLabel(row, text=f"{entry.get('date', '')} {entry.get('time', '')}",
-                         font=("Inter", 11), text_color=C["text_muted"]).pack(side="left")
+                         font=("Inter", 10), text_color=C["text_muted"]).pack(side="left")
             ctk.CTkLabel(row, text=f"{entry.get('task', '')} · {entry.get('minutes', 0)}m",
-                         font=("Inter", 11), text_color=C["text_dim"]).pack(side="right")
+                         font=("Inter", 10), text_color=C["text_dim"]).pack(side="right")
+
+    def _hide_stats(self):
+        self._showing_stats = False
+        if hasattr(self, "stats_panel"):
+            self.stats_panel.destroy()
+        # Restore session UI
+        self.session_header.pack(fill="x", padx=24, pady=(4, 0), before=self.stats_bar)
+        self.session_list.pack(fill="both", expand=True, padx=20, pady=(4, 4),
+                               before=self.stats_bar)
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
