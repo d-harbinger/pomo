@@ -89,6 +89,29 @@ def notify(title: str, message: str):
         pass
 
 
+# ── Scroll fix for Linux ────────────────────────────────────────────────────
+
+def _bind_mousewheel(scrollable_frame):
+    """Bind mousewheel to a CTkScrollableFrame so scrolling works on Linux."""
+    parent = scrollable_frame._parent_canvas
+
+    def _on_wheel(event):
+        parent.yview_scroll(-1 if event.delta > 0 or event.num == 4 else 1, "units")
+
+    def _bind_recursive(widget):
+        widget.bind("<Button-4>", _on_wheel, add="+")
+        widget.bind("<Button-5>", _on_wheel, add="+")
+        widget.bind("<MouseWheel>", _on_wheel, add="+")
+        for child in widget.winfo_children():
+            _bind_recursive(child)
+
+    _bind_recursive(scrollable_frame)
+
+    # Also bind new children as they appear
+    orig_pack = scrollable_frame._scrollbar.pack_info  # just a marker that it's built
+    scrollable_frame._mousewheel_hook = (_on_wheel, _bind_recursive)
+
+
 # ── Ring canvas ──────────────────────────────────────────────────────────────
 
 class RingCanvas(ctk.CTkCanvas):
@@ -334,6 +357,7 @@ class PomoApp(ctk.CTk):
         self.session_list = ctk.CTkScrollableFrame(
             self, fg_color="transparent", height=160)
         self.session_list.pack(fill="both", expand=True, padx=20, pady=(4, 4))
+        _bind_mousewheel(self.session_list)
 
         # Empty state message
         self.empty_label = ctk.CTkLabel(
@@ -486,6 +510,8 @@ class PomoApp(ctk.CTk):
                 on_remove=lambda idx=i: self._remove_session(idx),
             )
             row.pack(fill="x", pady=1)
+
+        _bind_mousewheel(self.session_list)
 
     def _count_done_before(self, index: int) -> int:
         return sum(1 for s in self.sessions[:index] if s["done"])
@@ -697,6 +723,7 @@ class PomoApp(ctk.CTk):
         self.stats_panel = ctk.CTkScrollableFrame(self, fg_color="transparent", height=200)
         self.stats_panel.pack(fill="both", expand=True, padx=20, pady=(4, 4),
                               before=self.stats_bar)
+        _bind_mousewheel(self.stats_panel)
 
         # Back button row
         back_row = ctk.CTkFrame(self.stats_panel, fg_color="transparent")
