@@ -21,9 +21,9 @@ DATA_DIR = Path(os.environ.get("POMO_DATA_DIR", Path.home() / ".local" / "share"
 STATS_FILE = DATA_DIR / "stats.json"
 HISTORY_FILE = DATA_DIR / "history.json"
 
-WORK_MINUTES = 25
-SHORT_BREAK_MINUTES = 5
-LONG_BREAK_MINUTES = 15
+DEFAULT_WORK = 25
+DEFAULT_SHORT_BREAK = 5
+DEFAULT_LONG_BREAK = 15
 LONG_BREAK_EVERY = 4
 
 
@@ -209,9 +209,11 @@ class PomoApp(ctk.CTk):
         super().__init__()
 
         self.stats = Stats()
+        self.durations = {"work": DEFAULT_WORK, "short_break": DEFAULT_SHORT_BREAK,
+                          "long_break": DEFAULT_LONG_BREAK}
         self.timer_state = TimerState.IDLE
         self.session_type = SessionType.WORK
-        self.remaining_seconds = WORK_MINUTES * 60
+        self.remaining_seconds = self.durations["work"] * 60
         self.total_seconds = self.remaining_seconds
         self._tick_id = None
 
@@ -269,9 +271,46 @@ class PomoApp(ctk.CTk):
                       text_color=C["text_dim"],
                       command=self._skip_session).pack(side="left", padx=5)
 
+        # ── Duration steppers ─────────────────────────────────────────────
+        dur_frame = ctk.CTkFrame(self, fg_color="transparent")
+        dur_frame.pack(fill="x", padx=28, pady=(4, 4))
+
+        self.dur_labels = {}
+        steppers = [
+            ("Focus", "work", C["work"]),
+            ("Short", "short_break", C["break"]),
+            ("Long", "long_break", C["long_break"]),
+        ]
+        for label, key, color in steppers:
+            col = ctk.CTkFrame(dur_frame, fg_color="transparent")
+            col.pack(side="left", expand=True)
+
+            ctk.CTkLabel(col, text=label, font=("Inter", 10),
+                         text_color=C["text_muted"]).pack()
+
+            row = ctk.CTkFrame(col, fg_color="transparent")
+            row.pack()
+
+            ctk.CTkButton(row, text="−", width=22, height=22, font=("Inter", 13),
+                          corner_radius=11, fg_color=C["surface"],
+                          hover_color=C["surface_light"], text_color=C["text_dim"],
+                          command=lambda k=key: self._adjust_duration(k, -5)).pack(side="left", padx=1)
+
+            dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 12, "bold"),
+                                   text_color=color, width=36)
+            dur_lbl.pack(side="left", padx=2)
+            self.dur_labels[key] = dur_lbl
+
+            ctk.CTkButton(row, text="+", width=22, height=22, font=("Inter", 13),
+                          corner_radius=11, fg_color=C["surface"],
+                          hover_color=C["surface_light"], text_color=C["text_dim"],
+                          command=lambda k=key: self._adjust_duration(k, 5)).pack(side="left", padx=1)
+
+        self._update_dur_labels()
+
         # ── Divider ──────────────────────────────────────────────────────
         ctk.CTkFrame(self, fg_color=C["surface_light"], height=1).pack(
-            fill="x", padx=24, pady=(8, 4))
+            fill="x", padx=24, pady=(4, 4))
 
         # ── Session queue header ─────────────────────────────────────────
         self.session_header = ctk.CTkFrame(self, fg_color="transparent")
@@ -360,7 +399,7 @@ class PomoApp(ctk.CTk):
         if self.current_index == -1:
             self.current_index = 0
             self.session_type = SessionType.WORK
-            self.remaining_seconds = WORK_MINUTES * 60
+            self.remaining_seconds = self.durations["work"] * 60
             self.total_seconds = self.remaining_seconds
             if auto_start:
                 self._rebuild_session_list()
@@ -456,6 +495,23 @@ class PomoApp(ctk.CTk):
         else:
             self._start_timer()
 
+    def _adjust_duration(self, key: str, delta: int):
+        self.durations[key] = max(5, self.durations[key] + delta)
+        self._update_dur_labels()
+        # If we're idle on this type, update the timer to match
+        if self.timer_state == TimerState.IDLE:
+            type_key = {"work": SessionType.WORK, "short_break": SessionType.SHORT_BREAK,
+                        "long_break": SessionType.LONG_BREAK}
+            if self.session_type == type_key[key]:
+                self.remaining_seconds = self.durations[key] * 60
+                self.total_seconds = self.remaining_seconds
+                self._update_display()
+
+    def _update_dur_labels(self):
+        self.dur_labels["work"].configure(text=f"{self.durations['work']}m")
+        self.dur_labels["short_break"].configure(text=f"{self.durations['short_break']}m")
+        self.dur_labels["long_break"].configure(text=f"{self.durations['long_break']}m")
+
     def _start_timer(self):
         if self.current_index == -1:
             return
@@ -476,11 +532,11 @@ class PomoApp(ctk.CTk):
             self.after_cancel(self._tick_id)
             self._tick_id = None
         if self.session_type == SessionType.WORK:
-            self.remaining_seconds = WORK_MINUTES * 60
+            self.remaining_seconds = self.durations["work"] * 60
         elif self.session_type == SessionType.SHORT_BREAK:
-            self.remaining_seconds = SHORT_BREAK_MINUTES * 60
+            self.remaining_seconds = self.durations["short_break"] * 60
         else:
-            self.remaining_seconds = LONG_BREAK_MINUTES * 60
+            self.remaining_seconds = self.durations["long_break"] * 60
         self.total_seconds = self.remaining_seconds
         self.start_btn.configure(text="Start")
         self._update_display()
@@ -512,7 +568,7 @@ class PomoApp(ctk.CTk):
             if 0 <= self.current_index < len(self.sessions):
                 task_name = self.sessions[self.current_index]["name"]
                 self.sessions[self.current_index]["done"] = True
-                self.stats.record_session(WORK_MINUTES, task_name)
+                self.stats.record_session(self.durations["work"], task_name)
                 self._update_today_stats()
                 self.work_sessions_completed += 1
 
@@ -521,10 +577,10 @@ class PomoApp(ctk.CTk):
             # Transition to break
             if self.work_sessions_completed % LONG_BREAK_EVERY == 0:
                 self.session_type = SessionType.LONG_BREAK
-                self.remaining_seconds = LONG_BREAK_MINUTES * 60
+                self.remaining_seconds = self.durations["long_break"] * 60
             else:
                 self.session_type = SessionType.SHORT_BREAK
-                self.remaining_seconds = SHORT_BREAK_MINUTES * 60
+                self.remaining_seconds = self.durations["short_break"] * 60
             self.total_seconds = self.remaining_seconds
 
             self._rebuild_session_list()
@@ -549,7 +605,7 @@ class PomoApp(ctk.CTk):
 
         self.current_index = next_idx
         self.session_type = SessionType.WORK
-        self.remaining_seconds = WORK_MINUTES * 60
+        self.remaining_seconds = self.durations["work"] * 60
         self.total_seconds = self.remaining_seconds
         self.timer_state = TimerState.IDLE
         self.start_btn.configure(text="Start")
