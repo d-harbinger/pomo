@@ -493,8 +493,6 @@ class PomoApp(ctk.CTk):
     # ── Timer logic ──────────────────────────────────────────────────────
 
     def _toggle_timer(self):
-        if self.current_index == -1:
-            return
         if self.timer_state == TimerState.RUNNING:
             self._pause_timer()
         else:
@@ -538,8 +536,6 @@ class PomoApp(ctk.CTk):
         self.dur_labels["long_break"].configure(text=f"{self.durations['long_break']}m")
 
     def _start_timer(self):
-        if self.current_index == -1:
-            return
         self.timer_state = TimerState.RUNNING
         self.start_btn.configure(text="Pause")
         self._tick()
@@ -589,15 +585,17 @@ class PomoApp(ctk.CTk):
         self.start_btn.configure(text="Start")
 
         if self.session_type == SessionType.WORK:
-            # Mark current session done
+            # Mark current session done (if queued) or record standalone
             if 0 <= self.current_index < len(self.sessions):
                 task_name = self.sessions[self.current_index]["name"]
                 self.sessions[self.current_index]["done"] = True
-                self.stats.record_session(self.durations["work"], task_name)
-                self._update_today_stats()
-                self.work_sessions_completed += 1
+            else:
+                task_name = "Focus"
+            self.stats.record_session(self.durations["work"], task_name)
+            self._update_today_stats()
+            self.work_sessions_completed += 1
 
-                notify("Pomo", f"Done: {task_name}")
+            notify("Pomo", f"Done: {task_name}")
 
             # Transition to break
             if self.work_sessions_completed % LONG_BREAK_EVERY == 0:
@@ -668,7 +666,7 @@ class PomoApp(ctk.CTk):
             label = "Long Break"
             color, dim = C["long_break"], C["long_break_dim"]
         else:
-            label = "Ready"
+            label = "Focus"
             color, dim = C["work"], C["work_dim"]
 
         self.ring.draw(progress, time_text, label, color, dim)
