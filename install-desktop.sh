@@ -3,19 +3,20 @@
 set -e
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV="$APP_DIR/venv-$(hostname)"
 DESKTOP_FILE="$HOME/.local/share/applications/pomo.desktop"
 ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 
-# Ensure venv exists
-if [ ! -d "$APP_DIR/venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv "$APP_DIR/venv"
-    "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+# Ensure venv exists (per-host, so a shared folder across machines works)
+if [ ! -d "$VENV" ]; then
+    echo "Creating virtual environment ($VENV)..."
+    python3 -m venv "$VENV"
+    "$VENV/bin/pip" install -r "$APP_DIR/requirements.txt"
 fi
 
 # Generate icon
 echo "Generating icon..."
-"$APP_DIR/venv/bin/python" "$APP_DIR/gen_icon.py" "$ICON_DIR/pomo.png"
+"$VENV/bin/python" "$APP_DIR/gen_icon.py" "$ICON_DIR/pomo.png"
 
 # Write .desktop entry
 mkdir -p "$(dirname "$DESKTOP_FILE")"
@@ -23,7 +24,7 @@ cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Name=Pomo
 Comment=Pomodoro focus timer
-Exec=$APP_DIR/venv/bin/python $APP_DIR/pomo.py
+Exec=$VENV/bin/python $APP_DIR/pomo.py
 Icon=pomo
 Terminal=false
 Type=Application
