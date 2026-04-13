@@ -297,9 +297,14 @@ class PomoApp(ctk.CTk):
                           command=lambda k=key: self._adjust_duration(k, -5)).pack(side="left", padx=1)
 
             dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 12, "bold"),
-                                   text_color=color, width=36)
+                                   text_color=color, width=36, cursor="sb_v_double_arrow")
             dur_lbl.pack(side="left", padx=2)
             self.dur_labels[key] = dur_lbl
+
+            # Drag to adjust: up = increase, down = decrease, 5m per 30px
+            dur_lbl.bind("<Button-1>", lambda e, k=key: self._drag_start(e, k))
+            dur_lbl.bind("<B1-Motion>", self._drag_motion)
+            dur_lbl.bind("<ButtonRelease-1>", self._drag_end)
 
             ctk.CTkButton(row, text="+", width=22, height=22, font=("Inter", 13),
                           corner_radius=11, fg_color=C["surface"],
@@ -494,6 +499,26 @@ class PomoApp(ctk.CTk):
             self._pause_timer()
         else:
             self._start_timer()
+
+    def _drag_start(self, event, key):
+        self._drag_key = key
+        self._drag_y = event.y_root
+        self._drag_accum = 0
+
+    def _drag_motion(self, event):
+        if not hasattr(self, "_drag_key") or self._drag_key is None:
+            return
+        dy = self._drag_y - event.y_root  # up = positive
+        self._drag_accum += dy
+        self._drag_y = event.y_root
+        # Every 30px of drag = 5 minutes
+        steps = int(self._drag_accum / 30)
+        if steps != 0:
+            self._drag_accum -= steps * 30
+            self._adjust_duration(self._drag_key, steps * 5)
+
+    def _drag_end(self, event):
+        self._drag_key = None
 
     def _adjust_duration(self, key: str, delta: int):
         self.durations[key] = max(5, self.durations[key] + delta)
