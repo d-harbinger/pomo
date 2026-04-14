@@ -62,7 +62,9 @@ class Sounds:
         if not self.files["break"].exists():
             _gen_tone(self.files["break"], [880.0], duration_ms=350, volume=0.35)
 
-    def play(self, which: str):
+    def play(self, which: str, enabled: bool = True):
+        if not enabled:
+            return
         path = self.files.get(which)
         if not (_SOUND_PLAYER and path and path.exists()):
             return
@@ -211,10 +213,101 @@ class RingCanvas(ctk.CTkCanvas):
                             start=90, extent=-360 * progress,
                             outline=color, width=self.ring_width, style="arc")
 
-        self.create_text(cx, cy - 10, text=time_text, fill=C["text"],
-                         font=("JetBrains Mono", 36, "bold"))
-        self.create_text(cx, cy + 28, text=label, fill=C["text_dim"],
-                         font=("Inter", 12))
+        # Scale text with ring size so compact rings don't overlap.
+        time_font_size = max(14, int(self.size * 0.15))
+        label_font_size = max(8, int(self.size * 0.05))
+        offset = int(self.size * 0.08)
+        self.create_text(cx, cy - offset / 2, text=time_text, fill=C["text"],
+                         font=("JetBrains Mono", time_font_size, "bold"))
+        self.create_text(cx, cy + offset + label_font_size, text=label,
+                         fill=C["text_dim"], font=("Inter", label_font_size))
+
+
+# ── Pipped bar (retro "health bar" timer for wide mode) ─────────────────────
+
+class PipBar(ctk.CTkCanvas):
+    """Vertical Mega Man-style health bar: thin stacked pips that drain top-down.
+
+    Each pip = 1 minute. Draws large time readout at the top, then a single
+    column of pips filling the remainder of the canvas.
+    """
+
+    def __init__(self, master, width=72, height=400, cols=1, **kwargs):
+        super().__init__(master, width=width, height=height, bg=C["bg"],
+                         highlightthickness=0, **kwargs)
+        self.w = width
+        self.h = height
+        self.cols = cols
+
+    def set_size(self, width, height):
+        """Refresh internal dimensions after the canvas is resized by its layout."""
+        self.w = width
+        self.h = height
+        self.configure(width=width, height=height)
+
+    def draw(self, total_seconds, remaining_seconds, time_text, color, dim):
+        self.delete("all")
+        total_min = max(1, (total_seconds + 59) // 60)
+        cols = max(1, self.cols)
+        rows = (total_min + cols - 1) // cols
+
+        # Time readout at the top. "00:00" is ~3× the font size in mono,
+        # so size the font to fit the canvas width.
+        time_font_size = max(12, int((self.w - 8) / 3))
+        time_h = time_font_size + 14
+        self.create_text(self.w / 2, time_h / 2, text=time_text,
+                         fill=C["text"],
+                         font=("JetBrains Mono", time_font_size, "bold"))
+
+        # Outer bezel around the pip area.
+        pad = 3
+        bezel_y0 = time_h + 4
+        bezel_y1 = self.h - 4
+        self.create_rectangle(1, bezel_y0, self.w - 1, bezel_y1,
+                              outline=C["text_muted"], width=2)
+        self.create_rectangle(pad, bezel_y0 + pad - 1,
+                              self.w - pad, bezel_y1 - pad + 1,
+                              fill=C["bg"], outline="")
+
+        inner_x0 = pad + 2
+        inner_x1 = self.w - pad - 2
+        inner_y0 = bezel_y0 + pad + 1
+        inner_y1 = bezel_y1 - pad - 1
+        inner_w = inner_x1 - inner_x0
+        inner_h = inner_y1 - inner_y0
+
+        gap_x = 2 if cols > 1 else 0
+        gap_y = 1
+        pip_w = (inner_w - (cols - 1) * gap_x) / cols
+        pip_h = max(3.0, (inner_h - (rows - 1) * gap_y) / rows)
+
+        # Pip index convention: i=0 is the BOTTOM pip (drains last),
+        # i=total_min-1 is the TOP pip (drains first). That matches the
+        # classic Mega Man health bar — fill shrinks from the top.
+        for i in range(total_min):
+            r = rows - 1 - (i // cols)  # higher i = higher visual row
+            c = i % cols
+            x0 = inner_x0 + c * (pip_w + gap_x)
+            y0 = inner_y0 + r * (pip_h + gap_y)
+            x1 = x0 + pip_w
+            y1 = y0 + pip_h
+
+            # Pip `i` is full when remaining ≥ (i+1)*60, empty when ≤ i*60.
+            full_at = (i + 1) * 60
+            empty_at = i * 60
+            if remaining_seconds >= full_at:
+                frac = 1.0
+            elif remaining_seconds <= empty_at:
+                frac = 0.0
+            else:
+                frac = (remaining_seconds - empty_at) / 60.0
+
+            # Dim background (empty slot) then colored fill from bottom up.
+            self.create_rectangle(x0, y0, x1, y1, fill=dim, outline="", width=0)
+            if frac > 0:
+                fy0 = y1 - (y1 - y0) * frac
+                self.create_rectangle(x0, fy0, x1, y1, fill=color,
+                                      outline="", width=0)
 
 
 # ── Session row widget ───────────────────────────────────────────────────────
@@ -222,7 +315,9 @@ class RingCanvas(ctk.CTkCanvas):
 class SessionRow(ctk.CTkFrame):
     def __init__(self, master, name: str, index: int, session_type: str,
                  is_active: bool, is_done: bool, duration: int = None,
-                 on_remove=None, on_duration_change=None, on_rename=None, **kwargs):
+                 on_remove=None, on_duration_change=None, on_rename=None,
+                 on_drag_start=None, on_drag_motion=None, on_drag_end=None,
+                 **kwargs):
         super().__init__(master, fg_color="transparent", height=32, **kwargs)
         self.pack_propagate(False)
 
@@ -244,9 +339,24 @@ class SessionRow(ctk.CTkFrame):
             dot_color, text_color, marker = C["text_muted"], C["text_dim"], "○"
 
         indent = 20 if is_break else 0
+        # Drag handle (⋮⋮): only draggable when the row is not active/done,
+        # so users can't move the in-progress item out from under the timer.
+        draggable = on_drag_start and not is_done and not is_active
+        handle_text = "⋮⋮" if draggable else " "
+        handle = ctk.CTkLabel(self, text=handle_text, font=("Inter", 11),
+                              width=14, text_color=C["text_muted"],
+                              fg_color="transparent",
+                              cursor="fleur" if draggable else "")
+        handle.pack(side="left", padx=(2 + indent, 0))
+        if draggable:
+            handle.bind("<ButtonPress-1>",
+                        lambda e: on_drag_start(index, e.y_root))
+            handle.bind("<B1-Motion>", lambda e: on_drag_motion(e.y_root))
+            handle.bind("<ButtonRelease-1>", lambda e: on_drag_end(e.y_root))
+
         ctk.CTkLabel(self, text=marker, font=("Inter", 14), width=20,
                      text_color=dot_color, fg_color="transparent"
-                     ).pack(side="left", padx=(4 + indent, 2))
+                     ).pack(side="left", padx=(2, 2))
 
         font_spec = ("Inter", 11, "italic") if is_break else ("Inter", 13)
         name_lbl = ctk.CTkLabel(self, text=name, font=font_spec,
@@ -264,9 +374,10 @@ class SessionRow(ctk.CTkFrame):
                           text_color=C["text_muted"], command=on_remove
                           ).pack(side="right", padx=(0, 4))
 
-        # Per-break duration stepper (read-only for work / active / done).
-        if is_break and duration is not None:
-            if not is_done and not is_active and on_duration_change:
+        # Duration stepper on every non-done row (works for both work items
+        # and breaks; the active session can be shortened/extended live).
+        if duration is not None:
+            if not is_done and on_duration_change:
                 ctk.CTkButton(self, text="+", width=18, height=18,
                               font=("Inter", 11, "bold"), corner_radius=9,
                               fg_color="transparent", hover_color=C["surface_light"],
@@ -276,12 +387,36 @@ class SessionRow(ctk.CTkFrame):
                 dur_lbl = ctk.CTkLabel(self, text=f"{duration}m",
                                        font=("Inter", 11, "bold"),
                                        text_color=active_color, width=30,
-                                       cursor="xterm",
+                                       cursor="sb_v_double_arrow",
                                        fg_color="transparent")
                 dur_lbl.pack(side="right")
+                self.dur_lbl = dur_lbl
                 if on_duration_change is not None:
-                    dur_lbl.bind("<Button-1>",
-                                 lambda e: on_duration_change("set", dur_lbl))
+                    # Click to type; drag vertically to bump by minutes.
+                    drag_state = {"y": 0, "accum": 0, "dragged": False}
+
+                    def on_press(event):
+                        drag_state["y"] = event.y_root
+                        drag_state["accum"] = 0
+                        drag_state["dragged"] = False
+
+                    def on_motion(event):
+                        dy = drag_state["y"] - event.y_root
+                        drag_state["accum"] += dy
+                        drag_state["y"] = event.y_root
+                        steps = int(drag_state["accum"] / 8)
+                        if steps != 0:
+                            drag_state["accum"] -= steps * 8
+                            drag_state["dragged"] = True
+                            on_duration_change(steps)
+
+                    def on_release(event):
+                        if not drag_state["dragged"]:
+                            on_duration_change("set", dur_lbl)
+
+                    dur_lbl.bind("<ButtonPress-1>", on_press)
+                    dur_lbl.bind("<B1-Motion>", on_motion)
+                    dur_lbl.bind("<ButtonRelease-1>", on_release)
                 ctk.CTkButton(self, text="−", width=18, height=18,
                               font=("Inter", 11, "bold"), corner_radius=9,
                               fg_color="transparent", hover_color=C["surface_light"],
@@ -410,7 +545,7 @@ class PomoApp(ctk.CTk):
             self.total_seconds = self.remaining_seconds
         self._view = "sessions"  # "sessions" | "stats" | "themes"
 
-        # Load saved theme
+        # Load prefs (theme + toggles).
         prefs = load_json(PREFS_FILE, {})
         theme_name = prefs.get("theme", "midnight")
         if theme_name in THEMES:
@@ -418,16 +553,51 @@ class PomoApp(ctk.CTk):
             C.update(THEMES[theme_name])
         else:
             self.theme_name = "midnight"
+        self.chain_auto_start = bool(prefs.get("chain_auto_start", False))
+        self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
+        # mode: "full" (default), "wide" (ring left + stack right), "bar" (thin).
+        self.mode = prefs.get("mode")
+        if self.mode not in ("full", "wide", "bar"):
+            # Migrate legacy `compact` bool.
+            self.mode = "bar" if prefs.get("compact") else "full"
 
         self.title("Pomo")
         self.configure(fg_color=C["bg"])
-        self.geometry("380x680")
-        self.minsize(340, 600)
+        self._apply_mode_geometry()
 
         self._build_ui()
         self._update_display()
+        self._bind_shortcuts()
+        self.bind("<Configure>", self._on_window_configure)
+        # Click on the root window's background dismisses any focused entry.
+        self.bind("<Button-1>", self._dismiss_inline_entry, add="+")
+
+    def _apply_mode_geometry(self):
+        if self.mode == "bar":
+            self.geometry("380x68")
+            self.minsize(320, 64)
+        elif self.mode == "wide":
+            self.geometry("680x360")
+            self.minsize(560, 300)
+        else:
+            self.geometry("380x680")
+            self.minsize(340, 180)
 
     def _build_ui(self):
+        # Reset widget handles each rebuild so stale references don't linger.
+        self.compact_time = None
+        self.compact_task = None
+        self.compact_progress = None
+        self.pipbar = None
+        self.wide_time = None
+        self.wide_task = None
+        if self.mode == "bar":
+            self._build_ui_compact()
+            return
+        if self.mode == "wide":
+            self._build_ui_wide()
+            return
+
         # ── Top bar ──────────────────────────────────────────────────────
         top = ctk.CTkFrame(self, fg_color="transparent", height=40)
         top.pack(fill="x", padx=16, pady=(12, 0))
@@ -451,6 +621,21 @@ class PomoApp(ctk.CTk):
             top, text="📋", width=36, height=36, font=("Inter", 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_templates
+        ).pack(side="right", padx=(0, 4))
+
+        # Sound toggle.
+        self.sound_btn = ctk.CTkButton(
+            top, text="🔊" if self.sounds_enabled else "🔇",
+            width=36, height=36, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_sounds)
+        self.sound_btn.pack(side="right", padx=(0, 4))
+
+        # Mode cycle: full → wide → bar → full.
+        ctk.CTkButton(
+            top, text="🗗", width=36, height=36, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._cycle_mode
         ).pack(side="right", padx=(0, 4))
 
         # ── Timer ────────────────────────────────────────────────────────
@@ -479,6 +664,18 @@ class PomoApp(ctk.CTk):
                       fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._skip_session).pack(side="left", padx=5)
+
+        # Chain toggle: auto-start the next session after a break.
+        chain_row = ctk.CTkFrame(self, fg_color="transparent")
+        chain_row.pack(pady=(0, 2))
+        self.chain_var = ctk.BooleanVar(value=self.chain_auto_start)
+        ctk.CTkCheckBox(chain_row, text="Auto-start next session",
+                        font=("Inter", 10), text_color=C["text_muted"],
+                        variable=self.chain_var, height=16,
+                        checkbox_width=14, checkbox_height=14,
+                        fg_color=C["work"], hover_color=C["work_dim"],
+                        border_color=C["surface_light"],
+                        command=self._toggle_chain).pack()
 
         # ── Duration steppers ────────────────────────────────────────────
         dur_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -542,6 +739,260 @@ class PomoApp(ctk.CTk):
         self.today_label.pack(expand=True)
         self._update_today_stats()
 
+    def _build_ui_compact(self):
+        """Horizontal bar layout: time · task · controls · expand."""
+        bar = ctk.CTkFrame(self, fg_color=C["surface"], corner_radius=12)
+        bar.pack(fill="x", padx=6, pady=(6, 2))
+
+        # Thin progress strip below the bar, colored per session type.
+        # Click or drag on it to scrub the timer position.
+        self.compact_progress = ctk.CTkProgressBar(
+            self, height=8, corner_radius=3,
+            fg_color=C["surface"], progress_color=C["work"])
+        self.compact_progress.set(0)
+        self.compact_progress.pack(fill="x", padx=10, pady=(0, 6))
+        self.compact_progress.configure(cursor="sb_h_double_arrow")
+        self.compact_progress.bind("<Button-1>", self._seek_from_event)
+        self.compact_progress.bind("<B1-Motion>", self._seek_from_event)
+
+        # Mono time label (no ring in bar mode).
+        self.compact_time = ctk.CTkLabel(
+            bar, text="00:00", font=("JetBrains Mono", 22, "bold"),
+            text_color=C["text"])
+        self.compact_time.pack(side="left", padx=(12, 6))
+
+        # Progress bar underneath feels cluttered; use a thin accent label
+        # (session name or break type) instead.
+        self.compact_task = ctk.CTkLabel(
+            bar, text="", font=("Inter", 11),
+            text_color=C["text_dim"], anchor="w")
+        self.compact_task.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        self.start_btn = ctk.CTkButton(
+            bar, text="Start", font=("Inter", 11, "bold"),
+            width=56, height=28, corner_radius=14,
+            fg_color=C["work"], hover_color=C["work_dim"],
+            text_color="#ffffff", command=self._toggle_timer)
+        self.start_btn.pack(side="left", padx=2)
+
+        ctk.CTkButton(bar, text="Skip", font=("Inter", 11),
+                      width=42, height=28, corner_radius=14,
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._skip_session).pack(side="left", padx=2)
+
+        ctk.CTkButton(bar, text="🗖", width=28, height=28, font=("Inter", 11),
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._toggle_compact).pack(side="right", padx=(2, 8))
+
+        # Stubs so non-compact code paths don't crash.
+        self.ring = None
+        self.dur_labels = {}
+        self.bottom = None
+        self.stats_bar = None
+        self.today_label = None
+        self.session_scroll = None
+
+    def _build_ui_wide(self):
+        """Horizontal split: [pipbar (full height)] | [session stack + controls]."""
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Left: pipbar-only column. Canvas resizes to fill vertically.
+        left = ctk.CTkFrame(container, fg_color="transparent", width=96)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
+
+        self.pipbar = PipBar(left, width=80, height=320, cols=1)
+        self.pipbar.pack(fill="both", expand=True, padx=4, pady=4)
+        self.ring = None
+        self.wide_time = None
+        self.wide_task = None
+
+        # Keep the canvas dims in sync with the frame as it resizes.
+        def _sync_pipbar(event):
+            if self.pipbar is not None and self.pipbar.winfo_exists():
+                self.pipbar.set_size(event.width, event.height)
+                self._update_display()
+        self.pipbar.bind("<Configure>", _sync_pipbar)
+
+        # Right: top-bar + session view + task label + controls row at bottom.
+        right = ctk.CTkFrame(container, fg_color="transparent")
+        right.pack(side="left", fill="both", expand=True, padx=(10, 0))
+
+        right_top = ctk.CTkFrame(right, fg_color="transparent")
+        right_top.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(right_top, text="pomo", font=("Inter", 16, "bold"),
+                     text_color=C["text"]).pack(side="left", padx=4)
+        ctk.CTkButton(right_top, text="🗖", width=28, height=28,
+                      font=("Inter", 12),
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._cycle_mode).pack(side="right")
+        self.sound_btn = ctk.CTkButton(
+            right_top, text="🔊" if self.sounds_enabled else "🔇",
+            width=28, height=28, font=("Inter", 12),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_sounds)
+        self.sound_btn.pack(side="right", padx=(0, 2))
+
+        # Controls pinned to the bottom of the right column.
+        ctrl = ctk.CTkFrame(right, fg_color="transparent")
+        ctrl.pack(side="bottom", fill="x", pady=(6, 0))
+        self.start_btn = ctk.CTkButton(
+            ctrl, text="Start", font=("Inter", 14, "bold"),
+            height=38, corner_radius=19,
+            fg_color=C["work"], hover_color=C["work_dim"],
+            text_color="#ffffff", command=self._toggle_timer)
+        self.start_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ctk.CTkButton(ctrl, text="Reset", font=("Inter", 12),
+                      width=60, height=38, corner_radius=19,
+                      fg_color=C["surface"], hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._reset_timer).pack(side="left", padx=2)
+        ctk.CTkButton(ctrl, text="Skip", font=("Inter", 12),
+                      width=60, height=38, corner_radius=19,
+                      fg_color=C["surface"], hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._skip_session).pack(side="left", padx=(2, 0))
+
+        # Current-session label, above the controls.
+        self.wide_task = ctk.CTkLabel(
+            right, text="", font=("Inter", 12),
+            text_color=C["text_dim"], anchor="w")
+        self.wide_task.pack(side="bottom", fill="x", pady=(4, 0))
+
+        # Session view fills the remaining space between top bar and controls.
+        self.bottom = right
+        self._build_session_view()
+
+        # Stubs.
+        self.dur_labels = {}
+        self.stats_bar = None
+        self.today_label = None
+
+    def _cycle_mode(self):
+        """full → wide → bar → full."""
+        order = ["full", "wide", "bar"]
+        self.mode = order[(order.index(self.mode) + 1) % len(order)]
+        self._persist_prefs()
+        self._apply_mode_geometry()
+        for w in self.winfo_children():
+            w.destroy()
+        self._build_ui()
+        self._update_display()
+
+    # Legacy alias — shortcut and resize handler still call this.
+    def _toggle_compact(self):
+        self._cycle_mode()
+
+    def _toggle_sounds(self):
+        self.sounds_enabled = not self.sounds_enabled
+        self._persist_prefs()
+        if hasattr(self, "sound_btn") and self.sound_btn.winfo_exists():
+            self.sound_btn.configure(text="🔊" if self.sounds_enabled else "🔇")
+
+    def _toggle_chain(self):
+        self.chain_auto_start = bool(self.chain_var.get())
+        self._persist_prefs()
+
+    def _persist_prefs(self):
+        prefs = load_json(PREFS_FILE, {})
+        prefs["theme"] = self.theme_name
+        prefs["chain_auto_start"] = self.chain_auto_start
+        prefs["sounds_enabled"] = self.sounds_enabled
+        prefs["mode"] = self.mode
+        prefs.pop("compact", None)
+        save_json(PREFS_FILE, prefs)
+
+    def _dismiss_inline_entry(self, event):
+        """Click off an open inline entry to commit it via FocusOut."""
+        focused = self.focus_get()
+        if focused is None:
+            return
+        cls = focused.winfo_class()
+        if cls not in ("Entry", "CTkEntry", "TEntry"):
+            return
+        # If the click target is inside the focused entry, don't steal focus.
+        target = event.widget
+        while target is not None:
+            if target is focused:
+                return
+            try:
+                target = target.master
+            except Exception:
+                break
+        self.focus_set()
+
+    def _seek_from_event(self, event):
+        """Scrub current session position from a click/drag on the progress bar."""
+        if self.total_seconds <= 0:
+            return
+        widget = event.widget
+        width = widget.winfo_width()
+        if width <= 1:
+            return
+        frac = max(0.0, min(1.0, event.x / width))
+        # frac = elapsed fraction; remaining = (1 - frac) * total.
+        self.remaining_seconds = int(self.total_seconds * (1 - frac))
+        self._update_display()
+
+    def _on_window_configure(self, event):
+        # Only react to events on the root window itself, not children.
+        if event.widget is not self:
+            return
+        # Debounce: wait until the user finishes dragging before swapping.
+        if getattr(self, "_resize_job", None):
+            self.after_cancel(self._resize_job)
+        h = event.height
+        self._resize_job = self.after(120, lambda h=h: self._maybe_swap_mode(h))
+
+    def _maybe_swap_mode(self, h: int):
+        self._resize_job = None
+        # Height-driven fallback to bar mode when the window gets very short.
+        # Only auto-swap between "full" and "bar"; "wide" is opt-in only.
+        if self.mode == "full" and h <= 200:
+            self.mode = "bar"
+            self._persist_prefs()
+            self._apply_mode_geometry()
+            for w in self.winfo_children():
+                w.destroy()
+            self._build_ui()
+            self._update_display()
+        elif self.mode == "bar" and h >= 400:
+            self.mode = "full"
+            self._persist_prefs()
+            self._apply_mode_geometry()
+            for w in self.winfo_children():
+                w.destroy()
+            self._build_ui()
+            self._update_display()
+
+    def _bind_shortcuts(self):
+        # Space: start/pause. N: add focus. S: add short break. L: add long.
+        # U: undo. M: toggle compact. Shortcuts are suppressed while an
+        # Entry has focus so they don't fire during inline edits.
+        def guard(fn):
+            def _go(event):
+                focused = self.focus_get()
+                cls = focused.winfo_class() if focused else ""
+                if cls in ("Entry", "CTkEntry", "TEntry"):
+                    return
+                fn()
+            return _go
+        self.bind("<space>", guard(self._toggle_timer))
+        for key in ("n", "N"):
+            self.bind(key, guard(self._add_session_prompt))
+        for key in ("s", "S"):
+            self.bind(key, guard(lambda: self._add_break("short_break")))
+        for key in ("l", "L"):
+            self.bind(key, guard(lambda: self._add_break("long_break")))
+        for key in ("u", "U"):
+            self.bind(key, guard(self._undo))
+        for key in ("m", "M"):
+            self.bind(key, guard(self._toggle_compact))
+
     # ── Session view ─────────────────────────────────────────────────────
 
     def _build_session_view(self):
@@ -589,9 +1040,29 @@ class PomoApp(ctk.CTk):
                       command=lambda: self._add_break("short_break")
                       ).pack(side="right", padx=(4, 0))
 
+        # Running-total row: sum of all pending session durations.
+        total_row = ctk.CTkFrame(self.bottom, fg_color="transparent")
+        total_row.pack(fill="x", padx=24, pady=(2, 0))
+        self.total_label = ctk.CTkLabel(total_row, text="", font=("Inter", 10),
+                                        text_color=C["text_muted"])
+        self.total_label.pack(side="left")
+
         # Scrollable list
         self.session_scroll = ScrollFrame(self.bottom)
         self.session_scroll.pack(fill="both", expand=True, padx=20, pady=(4, 4))
+
+        # Double-click empty space in the list area to add a new focus session.
+        self.session_scroll.canvas.bind(
+            "<Double-Button-1>", lambda e: self._add_session_prompt())
+        self.session_scroll.inner.bind(
+            "<Double-Button-1>", lambda e: self._add_session_prompt())
+
+        # Single-click empty space takes focus away from any open inline
+        # entry — triggers its FocusOut → commit/cancel behavior.
+        self.session_scroll.canvas.bind(
+            "<Button-1>", lambda e: self.focus_set(), add="+")
+        self.session_scroll.inner.bind(
+            "<Button-1>", lambda e: self.focus_set(), add="+")
 
         self._rebuild_session_list()
 
@@ -602,6 +1073,8 @@ class PomoApp(ctk.CTk):
     # ── View switching ───────────────────────────────────────────────────
 
     def _show_view(self, view: str):
+        if self.bottom is None:  # compact mode has no bottom panel
+            return
         self._view = view
         self._clear_bottom()
         if view == "sessions":
@@ -946,21 +1419,107 @@ class PomoApp(ctk.CTk):
                 "Short Break" if t == "short_break"
                 else "Long Break" if t == "long_break"
                 else "Focus")
-            entry = {"type": t, "name": name, "done": False}
-            if t != "work":
-                entry["duration"] = item.get("duration", self.durations[t])
+            entry = {"type": t, "name": name, "done": False,
+                     "duration": item.get("duration", self.durations[t])}
             restored.append(entry)
         return restored
 
     def _save_sessions(self):
-        """Save stack template (type + name + per-break duration) for next run."""
+        """Save stack template (type + name + per-item duration) for next run."""
         template = []
         for s in self.sessions:
             item = {"type": s["type"], "name": s["name"]}
-            if s["type"] != "work" and "duration" in s:
+            if "duration" in s:
                 item["duration"] = s["duration"]
             template.append(item)
         save_json(SESSIONS_FILE, template)
+
+    def _row_drag_start(self, index: int, y_root: int):
+        self._drag_src = index
+        self._drag_target = index
+        # Dim the source row so the user knows which item is moving.
+        src_row = self._row_widgets.get(index)
+        if src_row is not None:
+            src_row.configure(fg_color=C["surface"])
+
+    def _row_drag_motion(self, y_root: int):
+        if getattr(self, "_drag_src", None) is None:
+            return
+        # Find which row's midpoint the cursor is nearest.
+        target = self._drag_src
+        for idx, row in self._row_widgets.items():
+            if self.sessions[idx]["done"] or idx == self.current_index:
+                continue
+            try:
+                top = row.winfo_rooty()
+                bot = top + row.winfo_height()
+            except Exception:
+                continue
+            if top <= y_root <= bot:
+                target = idx
+                break
+        if target == self._drag_target:
+            return
+        self._drag_target = target
+        # Refresh highlight: only the target row gets an accent border; the
+        # source stays dimmed so you can see both endpoints.
+        for idx, row in self._row_widgets.items():
+            if idx == self._drag_src:
+                row.configure(fg_color=C["surface"], border_width=0)
+            elif idx == target:
+                row.configure(fg_color=C["surface_light"],
+                              border_width=1, border_color=C["work"])
+            else:
+                row.configure(fg_color="transparent", border_width=0)
+
+    def _row_drag_end(self, y_root: int):
+        src = getattr(self, "_drag_src", None)
+        tgt = getattr(self, "_drag_target", None)
+        self._drag_src = None
+        self._drag_target = None
+        # Reset all highlights before any rebuild.
+        for row in self._row_widgets.values():
+            try:
+                row.configure(fg_color="transparent", border_width=0)
+            except Exception:
+                pass
+        if src is None or tgt is None or src == tgt:
+            return
+        if not (0 <= src < len(self.sessions) and 0 <= tgt < len(self.sessions)):
+            return
+        self._push_undo()
+        item = self.sessions.pop(src)
+        self.sessions.insert(tgt, item)
+        # Keep current_index pointed at the same session after reorder.
+        if self.current_index == src:
+            self.current_index = tgt
+        elif src < self.current_index <= tgt:
+            self.current_index -= 1
+        elif tgt <= self.current_index < src:
+            self.current_index += 1
+        self._save_sessions()
+        self._rebuild_session_list()
+        self._update_display()
+
+    def _update_total_label(self):
+        if not hasattr(self, "total_label") or self.total_label is None:
+            return
+        total_min = 0
+        pending = 0
+        for s in self.sessions:
+            if s["done"]:
+                continue
+            pending += 1
+            if s["type"] == "work":
+                total_min += self.durations["work"]
+            else:
+                total_min += s.get("duration", self.durations[s["type"]])
+        if pending == 0:
+            self.total_label.configure(text="")
+            return
+        hrs, mins = divmod(total_min, 60)
+        time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
+        self.total_label.configure(text=f"{pending} pending · {time_str} planned")
 
     def _begin_rename(self, index: int):
         self._editing_index = index
@@ -1044,6 +1603,8 @@ class PomoApp(ctk.CTk):
         return -1
 
     def _add_session_prompt(self):
+        if self.session_scroll is None:
+            return
         if hasattr(self, "_inline_entry") and self._inline_entry is not None:
             try:
                 self._inline_entry.focus_set()
@@ -1101,7 +1662,8 @@ class PomoApp(ctk.CTk):
 
     def _add_session(self, name: str, auto_start: bool = True):
         self._push_undo()
-        self.sessions.append({"type": "work", "name": name, "done": False})
+        self.sessions.append({"type": "work", "name": name, "done": False,
+                              "duration": self.durations["work"]})
         self._save_sessions()
         if self.current_index == -1:
             self.current_index = len(self.sessions) - 1
@@ -1133,29 +1695,52 @@ class PomoApp(ctk.CTk):
         self._rebuild_session_list()
         self._update_display()
 
-    def _adjust_break_duration(self, index: int, delta, widget=None):
-        """delta is int minutes, or the string "set" to open inline edit on `widget`."""
+    def _adjust_session_duration(self, index: int, delta, widget=None):
+        """delta is int minutes, or the string "set" to open inline edit on `widget`.
+
+        Works on any session type (work/short/long). If the session is currently
+        active, the new duration is applied live so remaining time updates.
+        """
         if not (0 <= index < len(self.sessions)):
             return
         s = self.sessions[index]
-        if s["type"] not in ("short_break", "long_break"):
-            return
-        current = s.get("duration", self.durations[s["type"]])
+        t = s["type"]
+        current = s.get("duration", self.durations[t])
         if delta == "set":
             if widget is None:
                 return
-            accent = C["break"] if s["type"] == "short_break" else C["long_break"]
+            accent = (C["work"] if t == "work"
+                      else C["break"] if t == "short_break"
+                      else C["long_break"])
             self._inline_edit_on(widget, initial=str(current), accent=accent,
-                                 on_commit=lambda v, i=index: self._set_break_duration(i, v))
+                                 on_commit=lambda v, i=index: self._set_session_duration(i, v))
             return
-        s["duration"] = max(1, current + delta)
-        self._save_sessions()
-        self._rebuild_session_list()
+        self._set_session_duration(index, max(1, current + delta))
 
-    def _set_break_duration(self, index: int, val: int):
-        if 0 <= index < len(self.sessions):
-            self.sessions[index]["duration"] = val
-            self._save_sessions()
+    def _set_session_duration(self, index: int, val: int):
+        if not (0 <= index < len(self.sessions)):
+            return
+        s = self.sessions[index]
+        s["duration"] = val
+        # Apply live if this is the session currently running/ready.
+        if index == self.current_index:
+            new_total = val * 60
+            elapsed = max(0, self.total_seconds - self.remaining_seconds)
+            if elapsed >= new_total:
+                self.remaining_seconds = 0
+            else:
+                self.remaining_seconds = new_total - elapsed
+            self.total_seconds = new_total
+            self._update_display()
+        self._save_sessions()
+        # Patch the single row rather than rebuilding the whole list — avoids
+        # the flash on every +/- click.
+        row = self._row_widgets.get(index) if hasattr(self, "_row_widgets") else None
+        dur_lbl = getattr(row, "dur_lbl", None) if row is not None else None
+        if dur_lbl is not None and dur_lbl.winfo_exists():
+            dur_lbl.configure(text=f"{val}m")
+            self._update_total_label()
+        else:
             self._rebuild_session_list()
 
     def _remove_session(self, index: int):
@@ -1182,6 +1767,9 @@ class PomoApp(ctk.CTk):
             self._update_display()
 
     def _rebuild_session_list(self):
+        if self.session_scroll is None:
+            return
+        self._update_total_label()
         self.session_scroll.clear()
         inner = self.session_scroll.inner
 
@@ -1191,20 +1779,26 @@ class PomoApp(ctk.CTk):
                          wraplength=280).pack(pady=20)
             return
 
+        self._row_widgets = {}
         for i, session in enumerate(self.sessions):
             if i == self._editing_index and session["type"] == "work":
                 self._build_rename_row(inner, i, session["name"])
                 continue
-            duration = session.get("duration") if session["type"] != "work" else None
-            SessionRow(inner, name=session["name"], index=i,
-                       session_type=session["type"],
-                       is_active=(i == self.current_index),
-                       is_done=session["done"],
-                       duration=duration,
-                       on_remove=lambda idx=i: self._remove_session(idx),
-                       on_duration_change=lambda delta, widget=None, idx=i: self._adjust_break_duration(idx, delta, widget),
-                       on_rename=lambda idx=i: self._begin_rename(idx),
-                       ).pack(fill="x", pady=0)
+            duration = session.get("duration", self.durations[session["type"]])
+            row = SessionRow(inner, name=session["name"], index=i,
+                             session_type=session["type"],
+                             is_active=(i == self.current_index),
+                             is_done=session["done"],
+                             duration=duration,
+                             on_remove=lambda idx=i: self._remove_session(idx),
+                             on_duration_change=lambda delta, widget=None, idx=i: self._adjust_session_duration(idx, delta, widget),
+                             on_rename=lambda idx=i: self._begin_rename(idx),
+                             on_drag_start=self._row_drag_start,
+                             on_drag_motion=self._row_drag_motion,
+                             on_drag_end=self._row_drag_end,
+                             )
+            row.pack(fill="x", pady=0)
+            self._row_widgets[i] = row
 
         self.session_scroll.bind_scroll_recursive()
 
@@ -1308,6 +1902,8 @@ class PomoApp(ctk.CTk):
                 self._update_display()
 
     def _update_dur_labels(self):
+        if not self.dur_labels:
+            return
         self.dur_labels["work"].configure(text=f"{self.durations['work']}m")
         self.dur_labels["short_break"].configure(text=f"{self.durations['short_break']}m")
         self.dur_labels["long_break"].configure(text=f"{self.durations['long_break']}m")
@@ -1338,8 +1934,6 @@ class PomoApp(ctk.CTk):
         """Duration of the currently-selected session in seconds."""
         if 0 <= self.current_index < len(self.sessions):
             s = self.sessions[self.current_index]
-            if s["type"] == "work":
-                return self.durations["work"] * 60
             return s.get("duration", self.durations[s["type"]]) * 60
         return self.durations[self.session_type.value] * 60
 
@@ -1374,14 +1968,16 @@ class PomoApp(ctk.CTk):
                 self.stats.record_session(self.durations["work"], cur["name"])
                 self._update_today_stats()
                 notify("Pomo", f"Done: {cur['name']}")
-                self.sounds.play("work")
+                self.sounds.play("work", enabled=self.sounds_enabled)
             else:
                 notify("Pomo", "Break's over — time to focus!")
-                self.sounds.play("break")
+                self.sounds.play("break", enabled=self.sounds_enabled)
 
-        # After a work session, auto-start the next item (usually a break).
-        # After a break, stop so the user can consciously start the next focus.
-        self._advance_to_next(auto_start=(completed_type == "work"))
+        # After work, always chain into the next item (usually a break).
+        # After a break, chain only if the user opted in.
+        auto = completed_type == "work" or (
+            completed_type in ("short_break", "long_break") and self.chain_auto_start)
+        self._advance_to_next(auto_start=auto)
 
     def _advance_to_next(self, auto_start: bool = False):
         next_idx = -1
@@ -1438,9 +2034,25 @@ class PomoApp(ctk.CTk):
             label = "Focus"
             color, dim = C["work"], C["work_dim"]
 
-        self.ring.draw(progress, time_text, label, color, dim)
+        if self.ring is not None:
+            self.ring.draw(progress, time_text, label, color, dim)
+        if getattr(self, "pipbar", None) is not None:
+            self.pipbar.draw(self.total_seconds, self.remaining_seconds,
+                             time_text, color, dim)
+        if getattr(self, "wide_task", None) is not None:
+            self.wide_task.configure(text=label, text_color=color)
+        if getattr(self, "compact_time", None) is not None:
+            self.compact_time.configure(text=time_text, text_color=color)
+            self.compact_task.configure(text=label)
+        if getattr(self, "compact_progress", None) is not None:
+            # Progress = elapsed fraction, so the bar fills over the session.
+            elapsed = 1 - progress
+            self.compact_progress.set(max(0, min(1, elapsed)))
+            self.compact_progress.configure(progress_color=color)
 
     def _update_today_stats(self):
+        if self.today_label is None:
+            return
         today = self.stats.today
         sessions = today["sessions"]
         minutes = int(today["minutes"])
