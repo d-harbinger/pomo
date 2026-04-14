@@ -2,7 +2,13 @@
 """Pomo — A clean pomodoro timer with named session planning."""
 
 import json
+import math
 import os
+import shutil
+import struct
+import subprocess
+import tempfile
+import wave
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -15,6 +21,59 @@ except ImportError:
     plyer_notify = None
 
 
+# ── Sound ────────────────────────────────────────────────────────────────────
+
+_SOUND_PLAYER = next((p for p in ("paplay", "aplay", "afplay", "play")
+                      if shutil.which(p)), None)
+
+
+def _gen_tone(path: Path, frequencies, duration_ms=400, volume=0.4):
+    """Generate a short WAV chime by summing sine waves with a gentle fade-out."""
+    framerate = 44100
+    n = int(framerate * duration_ms / 1000)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "w") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(framerate)
+        frames = []
+        for i in range(n):
+            fade = 1.0 if i < n * 0.1 else max(0.0, (n - i) / (n * 0.9))
+            sample = sum(math.sin(2 * math.pi * f * i / framerate) for f in frequencies)
+            sample /= max(1, len(frequencies))
+            val = int(volume * fade * 32767 * sample)
+            frames.append(struct.pack("<h", val))
+        w.writeframes(b"".join(frames))
+
+
+class Sounds:
+    """Lazy-generated chimes played via a system audio player."""
+
+    def __init__(self):
+        d = Path(tempfile.gettempdir()) / "pomo-sounds"
+        self.files = {
+            # Rising two-tone "done" chime for work sessions (C5 + E5 + G5 — major triad).
+            "work": d / "work_done.wav",
+            # Gentler single tone for end-of-break.
+            "break": d / "break_done.wav",
+        }
+        if not self.files["work"].exists():
+            _gen_tone(self.files["work"], [523.25, 659.25, 783.99], duration_ms=500)
+        if not self.files["break"].exists():
+            _gen_tone(self.files["break"], [880.0], duration_ms=350, volume=0.35)
+
+    def play(self, which: str):
+        path = self.files.get(which)
+        if not (_SOUND_PLAYER and path and path.exists()):
+            return
+        try:
+            subprocess.Popen([_SOUND_PLAYER, str(path)],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 DATA_DIR = Path(os.environ.get("POMO_DATA_DIR", Path.home() / ".local" / "share" / "pomo"))
@@ -22,6 +81,8 @@ STATS_FILE = DATA_DIR / "stats.json"
 HISTORY_FILE = DATA_DIR / "history.json"
 PREFS_FILE = DATA_DIR / "prefs.json"
 SESSIONS_FILE = DATA_DIR / "sessions.json"
+TEMPLATES_FILE = DATA_DIR / "templates.json"
+TEMPLATE_SLOTS = 5
 
 DEFAULT_WORK = 25
 DEFAULT_SHORT_BREAK = 5
@@ -161,7 +222,7 @@ class RingCanvas(ctk.CTkCanvas):
 class SessionRow(ctk.CTkFrame):
     def __init__(self, master, name: str, index: int, session_type: str,
                  is_active: bool, is_done: bool, duration: int = None,
-                 on_remove=None, on_duration_change=None, **kwargs):
+                 on_remove=None, on_duration_change=None, on_rename=None, **kwargs):
         super().__init__(master, fg_color="transparent", height=32, **kwargs)
         self.pack_propagate(False)
 
@@ -188,9 +249,13 @@ class SessionRow(ctk.CTkFrame):
                      ).pack(side="left", padx=(4 + indent, 2))
 
         font_spec = ("Inter", 11, "italic") if is_break else ("Inter", 13)
-        ctk.CTkLabel(self, text=name, font=font_spec,
-                     text_color=text_color, fg_color="transparent",
-                     anchor="w").pack(side="left", fill="x", expand=True, padx=(4, 0))
+        name_lbl = ctk.CTkLabel(self, text=name, font=font_spec,
+                                text_color=text_color, fg_color="transparent",
+                                anchor="w")
+        name_lbl.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        if on_rename and not is_done and not is_break:
+            name_lbl.configure(cursor="xterm")
+            name_lbl.bind("<Button-1>", lambda e: on_rename())
 
         if not is_done and not is_active and on_remove:
             ctk.CTkButton(self, text="×", width=22, height=22,
@@ -206,16 +271,22 @@ class SessionRow(ctk.CTkFrame):
                               font=("Inter", 11, "bold"), corner_radius=9,
                               fg_color="transparent", hover_color=C["surface_light"],
                               text_color=active_color,
-                              command=lambda: on_duration_change(5)
+                              command=lambda: on_duration_change(1)
                               ).pack(side="right", padx=(0, 2))
-                ctk.CTkLabel(self, text=f"{duration}m", font=("Inter", 11, "bold"),
-                             text_color=active_color, width=30,
-                             fg_color="transparent").pack(side="right")
+                dur_lbl = ctk.CTkLabel(self, text=f"{duration}m",
+                                       font=("Inter", 11, "bold"),
+                                       text_color=active_color, width=30,
+                                       cursor="xterm",
+                                       fg_color="transparent")
+                dur_lbl.pack(side="right")
+                if on_duration_change is not None:
+                    dur_lbl.bind("<Button-1>",
+                                 lambda e: on_duration_change("set", dur_lbl))
                 ctk.CTkButton(self, text="−", width=18, height=18,
                               font=("Inter", 11, "bold"), corner_radius=9,
                               fg_color="transparent", hover_color=C["surface_light"],
                               text_color=active_color,
-                              command=lambda: on_duration_change(-5)
+                              command=lambda: on_duration_change(-1)
                               ).pack(side="right", padx=(2, 0))
             else:
                 ctk.CTkLabel(self, text=f"{duration}m", font=("Inter", 11),
@@ -320,6 +391,9 @@ class PomoApp(ctk.CTk):
         super().__init__()
 
         self.stats = Stats()
+        self.sounds = Sounds()
+        self._editing_index = -1
+        self._undo_stack = []  # list of (sessions snapshot, current_index) tuples
         self.durations = {"work": DEFAULT_WORK, "short_break": DEFAULT_SHORT_BREAK,
                           "long_break": DEFAULT_LONG_BREAK}
         self.timer_state = TimerState.IDLE
@@ -373,6 +447,12 @@ class PomoApp(ctk.CTk):
             text_color=C["text_dim"], command=self._toggle_themes
         ).pack(side="right", padx=(0, 4))
 
+        ctk.CTkButton(
+            top, text="📋", width=36, height=36, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_templates
+        ).pack(side="right", padx=(0, 4))
+
         # ── Timer ────────────────────────────────────────────────────────
         self.ring = RingCanvas(self, size=240)
         self.ring.pack(pady=(16, 8))
@@ -420,7 +500,7 @@ class PomoApp(ctk.CTk):
             ctk.CTkButton(row, text="−", width=22, height=22, font=("Inter", 13),
                           corner_radius=11, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
-                          command=lambda k=key: self._adjust_duration(k, -5)
+                          command=lambda k=key: self._adjust_duration(k, -1)
                           ).pack(side="left", padx=1)
 
             dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 12, "bold"),
@@ -431,11 +511,13 @@ class PomoApp(ctk.CTk):
             dur_lbl.bind("<Button-1>", lambda e, k=key: self._drag_start(e, k))
             dur_lbl.bind("<B1-Motion>", self._drag_motion)
             dur_lbl.bind("<ButtonRelease-1>", self._drag_end)
+            dur_lbl.bind("<Double-Button-1>",
+                         lambda e, k=key, lbl=label: self._prompt_duration(k, lbl))
 
             ctk.CTkButton(row, text="+", width=22, height=22, font=("Inter", 13),
                           corner_radius=11, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
-                          command=lambda k=key: self._adjust_duration(k, 5)
+                          command=lambda k=key: self._adjust_duration(k, 1)
                           ).pack(side="left", padx=1)
 
         self._update_dur_labels()
@@ -476,6 +558,13 @@ class PomoApp(ctk.CTk):
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_muted"],
                       command=self._clear_stack).pack(side="left", padx=(8, 0))
+
+        # Undo: restore the previous stack state (add/remove/clear).
+        ctk.CTkButton(self.session_header, text="Undo", width=44, height=22,
+                      font=("Inter", 10), corner_radius=11,
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_muted"],
+                      command=self._undo).pack(side="left", padx=(4, 0))
 
         # Primary: add a work session (inline name entry, same as before).
         ctk.CTkButton(self.session_header, text="+", width=32, height=28,
@@ -521,12 +610,198 @@ class PomoApp(ctk.CTk):
             self._build_stats_view()
         elif view == "themes":
             self._build_theme_view()
+        elif view == "templates":
+            self._build_template_view()
 
     def _toggle_stats(self):
         self._show_view("sessions" if self._view == "stats" else "stats")
 
     def _toggle_themes(self):
         self._show_view("sessions" if self._view == "themes" else "themes")
+
+    def _toggle_templates(self):
+        self._show_view("sessions" if self._view == "templates" else "templates")
+
+    # ── Templates ────────────────────────────────────────────────────────
+
+    def _load_templates(self):
+        data = load_json(TEMPLATES_FILE, None)
+        slots = [None] * TEMPLATE_SLOTS
+        if isinstance(data, list):
+            for i, item in enumerate(data[:TEMPLATE_SLOTS]):
+                if isinstance(item, dict) and isinstance(item.get("sessions"), list):
+                    slots[i] = {
+                        "name": item.get("name") or f"Template {i + 1}",
+                        "sessions": item["sessions"],
+                    }
+        return slots
+
+    def _save_templates(self, slots):
+        save_json(TEMPLATES_FILE, slots)
+
+    def _save_to_slot(self, slot: int):
+        if not self.sessions:
+            return
+        slots = self._load_templates()
+        template_sessions = []
+        for s in self.sessions:
+            item = {"type": s["type"], "name": s["name"]}
+            if s["type"] != "work" and "duration" in s:
+                item["duration"] = s["duration"]
+            template_sessions.append(item)
+        existing_name = slots[slot]["name"] if slots[slot] else f"Template {slot + 1}"
+        slots[slot] = {"name": existing_name, "sessions": template_sessions}
+        self._save_templates(slots)
+        self._build_template_view_rebuild()
+
+    def _load_from_slot(self, slot: int):
+        slots = self._load_templates()
+        if not slots[slot]:
+            return
+        self._push_undo()
+        new_sessions = []
+        for item in slots[slot]["sessions"]:
+            t = item.get("type")
+            if t not in ("work", "short_break", "long_break"):
+                continue
+            entry = {"type": t, "name": item.get("name") or "Focus", "done": False}
+            if t != "work":
+                entry["duration"] = item.get("duration", self.durations[t])
+            new_sessions.append(entry)
+        self.sessions = new_sessions
+        self.current_index = self._first_pending_index()
+        if self.current_index >= 0:
+            self.session_type = SessionType(self.sessions[self.current_index]["type"])
+            self.remaining_seconds = self._current_session_seconds()
+            self.total_seconds = self.remaining_seconds
+        self._save_sessions()
+        self._update_button_color()
+        self._show_view("sessions")
+
+    def _delete_slot(self, slot: int):
+        slots = self._load_templates()
+        slots[slot] = None
+        self._save_templates(slots)
+        self._build_template_view_rebuild()
+
+    def _rename_slot(self, slot: int, new_name: str):
+        slots = self._load_templates()
+        if slots[slot]:
+            slots[slot]["name"] = new_name.strip() or f"Template {slot + 1}"
+            self._save_templates(slots)
+            self._build_template_view_rebuild()
+
+    def _build_template_view_rebuild(self):
+        if self._view == "templates":
+            self._clear_bottom()
+            self._build_template_view()
+
+    def _build_template_view(self):
+        scroll = ScrollFrame(self.bottom)
+        scroll.pack(fill="both", expand=True, padx=20, pady=(4, 4))
+        inner = scroll.inner
+
+        header = ctk.CTkFrame(inner, fg_color="transparent")
+        header.pack(fill="x", pady=(4, 8), padx=4)
+        ctk.CTkLabel(header, text="Templates", font=("Inter", 14, "bold"),
+                     text_color=C["text"]).pack(side="left")
+        ctk.CTkButton(header, text="← Back", width=60, height=26, font=("Inter", 11),
+                      corner_radius=13, fg_color=C["surface"],
+                      hover_color=C["surface_light"], text_color=C["text_dim"],
+                      command=lambda: self._show_view("sessions")).pack(side="right")
+
+        slots = self._load_templates()
+        for i in range(TEMPLATE_SLOTS):
+            card = ctk.CTkFrame(inner, fg_color=C["surface"], corner_radius=10)
+            card.pack(fill="x", pady=4, padx=4)
+
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x", padx=10, pady=(8, 2))
+
+            slot_data = slots[i]
+            if slot_data:
+                name_lbl = ctk.CTkLabel(top_row, text=slot_data["name"],
+                                        font=("Inter", 13, "bold"),
+                                        text_color=C["text"], cursor="xterm")
+                name_lbl.pack(side="left")
+                name_lbl.bind("<Button-1>",
+                              lambda e, s=i, w=name_lbl: self._edit_slot_name(s, w))
+
+                work_n = sum(1 for x in slot_data["sessions"] if x.get("type") == "work")
+                break_n = len(slot_data["sessions"]) - work_n
+                detail = f"{work_n} focus · {break_n} break{'s' if break_n != 1 else ''}"
+                ctk.CTkLabel(top_row, text=detail, font=("Inter", 10),
+                             text_color=C["text_muted"]).pack(side="right")
+            else:
+                ctk.CTkLabel(top_row, text=f"Slot {i + 1}",
+                             font=("Inter", 13),
+                             text_color=C["text_muted"]).pack(side="left")
+                ctk.CTkLabel(top_row, text="empty", font=("Inter", 10),
+                             text_color=C["text_muted"]).pack(side="right")
+
+            btn_row = ctk.CTkFrame(card, fg_color="transparent")
+            btn_row.pack(fill="x", padx=10, pady=(2, 8))
+
+            ctk.CTkButton(btn_row, text="Save current", height=26,
+                          font=("Inter", 11), corner_radius=13,
+                          fg_color=C["work"], hover_color=C["work_dim"],
+                          text_color="#ffffff",
+                          command=lambda s=i: self._save_to_slot(s)
+                          ).pack(side="left", padx=(0, 4))
+
+            if slot_data:
+                ctk.CTkButton(btn_row, text="Load", height=26,
+                              font=("Inter", 11), corner_radius=13,
+                              fg_color=C["break"], hover_color=C["break_dim"],
+                              text_color="#ffffff",
+                              command=lambda s=i: self._load_from_slot(s)
+                              ).pack(side="left", padx=(0, 4))
+                ctk.CTkButton(btn_row, text="×", width=26, height=26,
+                              font=("Inter", 12), corner_radius=13,
+                              fg_color="transparent",
+                              hover_color=C["surface_light"],
+                              text_color=C["text_muted"],
+                              command=lambda s=i: self._delete_slot(s)
+                              ).pack(side="right")
+
+        scroll.bind_scroll_recursive()
+
+    def _edit_slot_name(self, slot: int, widget):
+        current = widget.cget("text")
+        parent = widget.master
+        entry = ctk.CTkEntry(parent, font=("Inter", 13, "bold"),
+                             width=180, height=26,
+                             fg_color=C["surface_light"], text_color=C["text"],
+                             border_width=1, border_color=C["work"])
+        entry.place(in_=widget, x=-4, y=-4)
+        entry.insert(0, current)
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        closed = {"v": False}
+
+        def close():
+            if closed["v"]:
+                return
+            closed["v"] = True
+            try:
+                entry.destroy()
+            except Exception:
+                pass
+
+        def commit(event=None):
+            if closed["v"]:
+                return
+            self._rename_slot(slot, entry.get())
+            close()
+
+        def cancel(event=None):
+            close()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<KP_Enter>", commit)
+        entry.bind("<Escape>", cancel)
+        entry.bind("<FocusOut>", commit)
 
     # ── Theme view ───────────────────────────────────────────────────────
 
@@ -687,8 +962,66 @@ class PomoApp(ctk.CTk):
             template.append(item)
         save_json(SESSIONS_FILE, template)
 
+    def _begin_rename(self, index: int):
+        self._editing_index = index
+        self._rebuild_session_list()
+
+    def _build_rename_row(self, parent, index: int, current_name: str):
+        row = ctk.CTkFrame(parent, fg_color=C["surface_light"], corner_radius=8,
+                           height=36, border_width=1, border_color=C["work"])
+        row.pack(fill="x", pady=1, padx=2)
+        row.pack_propagate(False)
+
+        entry = ctk.CTkEntry(row, font=("Inter", 13), height=30,
+                             fg_color=C["surface_light"],
+                             text_color=C["text"], border_width=0)
+        entry.insert(0, current_name)
+        entry.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=3)
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        def commit(event=None):
+            new_name = entry.get().strip() or current_name
+            self.sessions[index]["name"] = new_name
+            self._editing_index = -1
+            self._save_sessions()
+            self._rebuild_session_list()
+            self._update_display()
+
+        def cancel(event=None):
+            self._editing_index = -1
+            self._rebuild_session_list()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<KP_Enter>", commit)
+        entry.bind("<Escape>", cancel)
+        entry.bind("<FocusOut>", commit)
+
+    def _push_undo(self):
+        """Snapshot the current stack so destructive actions can be undone."""
+        snapshot = [dict(s) for s in self.sessions]
+        self._undo_stack.append((snapshot, self.current_index))
+        if len(self._undo_stack) > 20:
+            self._undo_stack.pop(0)
+
+    def _undo(self):
+        if not self._undo_stack:
+            return
+        sessions, current_index = self._undo_stack.pop()
+        self.sessions = sessions
+        self.current_index = current_index
+        if 0 <= current_index < len(self.sessions):
+            self.session_type = SessionType(self.sessions[current_index]["type"])
+            self.remaining_seconds = self._current_session_seconds()
+            self.total_seconds = self.remaining_seconds
+        self._save_sessions()
+        self._update_button_color()
+        self._rebuild_session_list()
+        self._update_display()
+
     def _clear_stack(self):
         """Wipe all sessions and stop the timer."""
+        self._push_undo()
         if self._tick_id:
             self.after_cancel(self._tick_id)
             self._tick_id = None
@@ -762,10 +1095,12 @@ class PomoApp(ctk.CTk):
             row.destroy()
 
         entry.bind("<Return>", submit)
+        entry.bind("<KP_Enter>", submit)
         entry.bind("<Escape>", cancel)
         entry.focus_set()
 
     def _add_session(self, name: str, auto_start: bool = True):
+        self._push_undo()
         self.sessions.append({"type": "work", "name": name, "done": False})
         self._save_sessions()
         if self.current_index == -1:
@@ -784,6 +1119,7 @@ class PomoApp(ctk.CTk):
 
     def _add_break(self, kind: str):
         """kind is 'short_break' or 'long_break'. Duration snapshots current default."""
+        self._push_undo()
         label = "Short Break" if kind == "short_break" else "Long Break"
         self.sessions.append({"type": kind, "name": label, "done": False,
                               "duration": self.durations[kind]})
@@ -797,16 +1133,34 @@ class PomoApp(ctk.CTk):
         self._rebuild_session_list()
         self._update_display()
 
-    def _adjust_break_duration(self, index: int, delta: int):
+    def _adjust_break_duration(self, index: int, delta, widget=None):
+        """delta is int minutes, or the string "set" to open inline edit on `widget`."""
+        if not (0 <= index < len(self.sessions)):
+            return
+        s = self.sessions[index]
+        if s["type"] not in ("short_break", "long_break"):
+            return
+        current = s.get("duration", self.durations[s["type"]])
+        if delta == "set":
+            if widget is None:
+                return
+            accent = C["break"] if s["type"] == "short_break" else C["long_break"]
+            self._inline_edit_on(widget, initial=str(current), accent=accent,
+                                 on_commit=lambda v, i=index: self._set_break_duration(i, v))
+            return
+        s["duration"] = max(1, current + delta)
+        self._save_sessions()
+        self._rebuild_session_list()
+
+    def _set_break_duration(self, index: int, val: int):
         if 0 <= index < len(self.sessions):
-            s = self.sessions[index]
-            if s["type"] in ("short_break", "long_break"):
-                s["duration"] = max(5, s.get("duration", self.durations[s["type"]]) + delta)
-                self._save_sessions()
-                self._rebuild_session_list()
+            self.sessions[index]["duration"] = val
+            self._save_sessions()
+            self._rebuild_session_list()
 
     def _remove_session(self, index: int):
         if index < len(self.sessions):
+            self._push_undo()
             self.sessions.pop(index)
             self._save_sessions()
             if len(self.sessions) == 0:
@@ -838,6 +1192,9 @@ class PomoApp(ctk.CTk):
             return
 
         for i, session in enumerate(self.sessions):
+            if i == self._editing_index and session["type"] == "work":
+                self._build_rename_row(inner, i, session["name"])
+                continue
             duration = session.get("duration") if session["type"] != "work" else None
             SessionRow(inner, name=session["name"], index=i,
                        session_type=session["type"],
@@ -845,7 +1202,8 @@ class PomoApp(ctk.CTk):
                        is_done=session["done"],
                        duration=duration,
                        on_remove=lambda idx=i: self._remove_session(idx),
-                       on_duration_change=lambda delta, idx=i: self._adjust_break_duration(idx, delta),
+                       on_duration_change=lambda delta, widget=None, idx=i: self._adjust_break_duration(idx, delta, widget),
+                       on_rename=lambda idx=i: self._begin_rename(idx),
                        ).pack(fill="x", pady=0)
 
         self.session_scroll.bind_scroll_recursive()
@@ -869,16 +1227,77 @@ class PomoApp(ctk.CTk):
         dy = self._drag_y - event.y_root
         self._drag_accum += dy
         self._drag_y = event.y_root
-        steps = int(self._drag_accum / 30)
+        steps = int(self._drag_accum / 8)
         if steps != 0:
-            self._drag_accum -= steps * 30
-            self._adjust_duration(self._drag_key, steps * 5)
+            self._drag_accum -= steps * 8
+            self._adjust_duration(self._drag_key, steps)
 
     def _drag_end(self, event):
         self._drag_key = None
 
+    def _prompt_duration(self, key: str, label: str):
+        """Overlay an inline entry on the global duration label."""
+        dur_lbl = self.dur_labels[key]
+        color = dur_lbl.cget("text_color")
+        self._inline_edit_on(
+            dur_lbl, initial=str(self.durations[key]), accent=color,
+            on_commit=lambda v: self._set_global_duration(key, v))
+
+    def _set_global_duration(self, key: str, val: int):
+        self.durations[key] = val
+        self._update_dur_labels()
+        if self.timer_state == TimerState.IDLE:
+            type_map = {"work": SessionType.WORK,
+                        "short_break": SessionType.SHORT_BREAK,
+                        "long_break": SessionType.LONG_BREAK}
+            if self.session_type == type_map[key]:
+                self.remaining_seconds = self._current_session_seconds()
+                self.total_seconds = self.remaining_seconds
+                self._update_display()
+
+    def _inline_edit_on(self, widget, initial: str, accent: str, on_commit):
+        """Overlay a short numeric entry on top of `widget` via .place()."""
+        parent = widget.master
+        entry = ctk.CTkEntry(parent, font=("Inter", 12, "bold"),
+                             width=60, height=26,
+                             fg_color=C["surface_light"], text_color=accent,
+                             border_width=1, border_color=accent, justify="center")
+        entry.place(in_=widget, x=-12, y=-4)
+        entry.insert(0, initial)
+        entry.focus_set()
+        entry.select_range(0, "end")
+
+        state = {"closed": False}
+
+        def close():
+            if state["closed"]:
+                return
+            state["closed"] = True
+            try:
+                entry.destroy()
+            except Exception:
+                pass
+
+        def commit(event=None):
+            if state["closed"]:
+                return
+            try:
+                val = max(1, min(600, int(entry.get().strip())))
+                on_commit(val)
+            except ValueError:
+                pass
+            close()
+
+        def cancel(event=None):
+            close()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<KP_Enter>", commit)
+        entry.bind("<Escape>", cancel)
+        entry.bind("<FocusOut>", commit)
+
     def _adjust_duration(self, key: str, delta: int):
-        self.durations[key] = max(5, self.durations[key] + delta)
+        self.durations[key] = max(1, self.durations[key] + delta)
         self._update_dur_labels()
         if self.timer_state == TimerState.IDLE:
             type_map = {"work": SessionType.WORK, "short_break": SessionType.SHORT_BREAK,
@@ -955,8 +1374,10 @@ class PomoApp(ctk.CTk):
                 self.stats.record_session(self.durations["work"], cur["name"])
                 self._update_today_stats()
                 notify("Pomo", f"Done: {cur['name']}")
+                self.sounds.play("work")
             else:
                 notify("Pomo", "Break's over — time to focus!")
+                self.sounds.play("break")
 
         # After a work session, auto-start the next item (usually a break).
         # After a break, stop so the user can consciously start the next focus.
