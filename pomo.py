@@ -225,11 +225,39 @@ class RingCanvas(ctk.CTkCanvas):
 
 # ── Pipped bar (retro "health bar" timer for wide mode) ─────────────────────
 
+def _rounded_rect_points(x0, y0, x1, y1, r):
+    """Polygon points for a rounded rectangle (use with smooth=True)."""
+    r = max(0, min(r, (x1 - x0) / 2, (y1 - y0) / 2))
+    return [
+        x0 + r, y0, x1 - r, y0,
+        x1, y0, x1, y0 + r,
+        x1, y1 - r, x1, y1,
+        x1 - r, y1, x0 + r, y1,
+        x0, y1, x0, y1 - r,
+        x0, y0 + r, x0, y0,
+    ]
+
+
+def _lighten(hexcolor, amount=0.35):
+    """Lighten a #rrggbb color by `amount` (0..1) — for pip highlights."""
+    h = hexcolor.lstrip("#")
+    if len(h) != 6:
+        return hexcolor
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return hexcolor
+    r = int(r + (255 - r) * amount)
+    g = int(g + (255 - g) * amount)
+    b = int(b + (255 - b) * amount)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 class PipBar(ctk.CTkCanvas):
     """Vertical Mega Man-style health bar: thin stacked pips that drain top-down.
 
     Each pip = 1 minute. Draws large time readout at the top, then a single
-    column of pips filling the remainder of the canvas.
+    column of rounded, glossy pips filling the remainder of the canvas.
     """
 
     def __init__(self, master, width=72, height=400, cols=1, **kwargs):
@@ -259,15 +287,14 @@ class PipBar(ctk.CTkCanvas):
                          fill=C["text"],
                          font=("JetBrains Mono", time_font_size, "bold"))
 
-        # Outer bezel around the pip area.
+        # Rounded bezel around the pip area.
         pad = 3
         bezel_y0 = time_h + 4
         bezel_y1 = self.h - 4
-        self.create_rectangle(1, bezel_y0, self.w - 1, bezel_y1,
-                              outline=C["text_muted"], width=2)
-        self.create_rectangle(pad, bezel_y0 + pad - 1,
-                              self.w - pad, bezel_y1 - pad + 1,
-                              fill=C["bg"], outline="")
+        bezel_r = 10
+        self.create_polygon(
+            _rounded_rect_points(1, bezel_y0, self.w - 1, bezel_y1, bezel_r),
+            smooth=True, outline=C["text_muted"], width=2, fill=C["bg"])
 
         inner_x0 = pad + 2
         inner_x1 = self.w - pad - 2
@@ -277,9 +304,11 @@ class PipBar(ctk.CTkCanvas):
         inner_h = inner_y1 - inner_y0
 
         gap_x = 2 if cols > 1 else 0
-        gap_y = 1
+        gap_y = 3  # slightly larger gap — makes pips feel like distinct chips
         pip_w = (inner_w - (cols - 1) * gap_x) / cols
-        pip_h = max(3.0, (inner_h - (rows - 1) * gap_y) / rows)
+        pip_h = max(4.0, (inner_h - (rows - 1) * gap_y) / rows)
+        pip_radius = max(1.5, min(pip_w, pip_h) * 0.3)
+        highlight = _lighten(color, 0.4)
 
         # Pip index convention: i=0 is the BOTTOM pip (drains last),
         # i=total_min-1 is the TOP pip (drains first). That matches the
@@ -302,12 +331,22 @@ class PipBar(ctk.CTkCanvas):
             else:
                 frac = (remaining_seconds - empty_at) / 60.0
 
-            # Dim background (empty slot) then colored fill from bottom up.
-            self.create_rectangle(x0, y0, x1, y1, fill=dim, outline="", width=0)
+            # Empty-slot background (rounded chip, dim color).
+            self.create_polygon(
+                _rounded_rect_points(x0, y0, x1, y1, pip_radius),
+                smooth=True, fill=dim, outline="")
             if frac > 0:
+                # Filled portion — rounded, with a thin gloss highlight along
+                # its top edge for a "chip" look.
                 fy0 = y1 - (y1 - y0) * frac
-                self.create_rectangle(x0, fy0, x1, y1, fill=color,
-                                      outline="", width=0)
+                self.create_polygon(
+                    _rounded_rect_points(x0, fy0, x1, y1, pip_radius),
+                    smooth=True, fill=color, outline="")
+                if (y1 - fy0) > 3:
+                    hy = fy0 + 1
+                    self.create_line(x0 + pip_radius, hy,
+                                     x1 - pip_radius, hy,
+                                     fill=highlight, width=1)
 
 
 # ── Session row widget ───────────────────────────────────────────────────────
@@ -555,6 +594,7 @@ class PomoApp(ctk.CTk):
             self.theme_name = "midnight"
         self.chain_auto_start = bool(prefs.get("chain_auto_start", False))
         self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
+        self.durations_open = bool(prefs.get("durations_open", False))
         # mode: "full" (default), "wide" (ring left + stack right), "bar" (thin).
         self.mode = prefs.get("mode")
         if self.mode not in ("full", "wide", "bar"):
@@ -591,6 +631,8 @@ class PomoApp(ctk.CTk):
         self.pipbar = None
         self.wide_time = None
         self.wide_task = None
+        self.dur_frame = None
+        self.dur_divider = None
         if self.mode == "bar":
             self._build_ui_compact()
             return
@@ -605,38 +647,40 @@ class PomoApp(ctk.CTk):
         ctk.CTkLabel(top, text="pomo", font=("Inter", 20, "bold"),
                      text_color=C["text"]).pack(side="left")
 
-        self.stats_toggle_btn = ctk.CTkButton(
-            top, text="📊", width=36, height=36, font=("Inter", 16),
-            fg_color="transparent", hover_color=C["surface_light"],
-            text_color=C["text_dim"], command=self._toggle_stats)
-        self.stats_toggle_btn.pack(side="right")
-
+        # Icon cluster, packed so visual order left→right is:
+        # 📊 stats · 🎨 theme · 📋 templates · ⏱ durations · 🔊 sound · 🗗 mode cycle.
+        # With side="right", pack order is reverse of visual order.
         ctk.CTkButton(
-            top, text="🎨", width=36, height=36, font=("Inter", 14),
+            top, text="🗗", width=36, height=36, font=("Inter", 14),
             fg_color="transparent", hover_color=C["surface_light"],
-            text_color=C["text_dim"], command=self._toggle_themes
-        ).pack(side="right", padx=(0, 4))
-
-        ctk.CTkButton(
-            top, text="📋", width=36, height=36, font=("Inter", 14),
-            fg_color="transparent", hover_color=C["surface_light"],
-            text_color=C["text_dim"], command=self._toggle_templates
-        ).pack(side="right", padx=(0, 4))
-
-        # Sound toggle.
+            text_color=C["text_dim"], command=self._cycle_mode
+        ).pack(side="right")
         self.sound_btn = ctk.CTkButton(
             top, text="🔊" if self.sounds_enabled else "🔇",
             width=36, height=36, font=("Inter", 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_sounds)
         self.sound_btn.pack(side="right", padx=(0, 4))
-
-        # Mode cycle: full → wide → bar → full.
         ctk.CTkButton(
-            top, text="🗗", width=36, height=36, font=("Inter", 14),
+            top, text="⏱", width=36, height=36, font=("Inter", 18, "bold"),
             fg_color="transparent", hover_color=C["surface_light"],
-            text_color=C["text_dim"], command=self._cycle_mode
+            text_color=C["text_dim"], command=self._toggle_durations
         ).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(
+            top, text="📋", width=36, height=36, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_templates
+        ).pack(side="right", padx=(0, 4))
+        ctk.CTkButton(
+            top, text="🎨", width=36, height=36, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_themes
+        ).pack(side="right", padx=(0, 4))
+        self.stats_toggle_btn = ctk.CTkButton(
+            top, text="📊", width=36, height=36, font=("Inter", 16),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_stats)
+        self.stats_toggle_btn.pack(side="right", padx=(0, 4))
 
         # ── Timer ────────────────────────────────────────────────────────
         self.ring = RingCanvas(self, size=240)
@@ -677,15 +721,21 @@ class PomoApp(ctk.CTk):
                         border_color=C["surface_light"],
                         command=self._toggle_chain).pack()
 
-        # ── Duration steppers ────────────────────────────────────────────
+        # ── Duration steppers (collapsible via ⏱ top-bar button) ─────────
         dur_frame = ctk.CTkFrame(self, fg_color="transparent")
-        dur_frame.pack(fill="x", padx=28, pady=(4, 4))
+        self.dur_frame = dur_frame
+        self._dur_pack_args = {"fill": "x", "padx": 28, "pady": (4, 4)}
+
+        # Inner steppers row — side="left" columns live in their own frame so
+        # the pattern builder below can stack cleanly.
+        steppers_row = ctk.CTkFrame(dur_frame, fg_color="transparent")
+        steppers_row.pack(fill="x")
 
         self.dur_labels = {}
         for label, key, color in [("Focus", "work", C["work"]),
                                    ("Short", "short_break", C["break"]),
                                    ("Long", "long_break", C["long_break"])]:
-            col = ctk.CTkFrame(dur_frame, fg_color="transparent")
+            col = ctk.CTkFrame(steppers_row, fg_color="transparent")
             col.pack(side="left", expand=True)
 
             ctk.CTkLabel(col, text=label, font=("Inter", 10),
@@ -718,10 +768,16 @@ class PomoApp(ctk.CTk):
                           ).pack(side="left", padx=1)
 
         self._update_dur_labels()
+        # Pattern builder lives inside the same dropdown.
+        self._build_pattern_builder(dur_frame)
 
         # ── Divider ──────────────────────────────────────────────────────
-        ctk.CTkFrame(self, fg_color=C["surface_light"], height=1).pack(
-            fill="x", padx=24, pady=(4, 4))
+        self.dur_divider = ctk.CTkFrame(self, fg_color=C["surface_light"], height=1)
+        self.dur_divider.pack(fill="x", padx=24, pady=(4, 4))
+
+        # Apply initial durations visibility (default: hidden).
+        if self.durations_open:
+            dur_frame.pack(before=self.dur_divider, **self._dur_pack_args)
 
         # ── Bottom container (swaps between sessions and stats) ──────────
         self.bottom = ctk.CTkFrame(self, fg_color="transparent")
@@ -781,10 +837,10 @@ class PomoApp(ctk.CTk):
                       text_color=C["text_dim"],
                       command=self._skip_session).pack(side="left", padx=2)
 
-        ctk.CTkButton(bar, text="🗖", width=28, height=28, font=("Inter", 11),
+        ctk.CTkButton(bar, text="🗗", width=28, height=28, font=("Inter", 11),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
-                      command=self._toggle_compact).pack(side="right", padx=(2, 8))
+                      command=self._cycle_mode).pack(side="right", padx=(2, 8))
 
         # Stubs so non-compact code paths don't crash.
         self.ring = None
@@ -795,11 +851,11 @@ class PomoApp(ctk.CTk):
         self.session_scroll = None
 
     def _build_ui_wide(self):
-        """Horizontal split: [pipbar (full height)] | [session stack + controls]."""
+        """Horizontal split: [pipbar (full height)] | [everything-else]."""
         container = ctk.CTkFrame(self, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Left: pipbar-only column. Canvas resizes to fill vertically.
+        # ── Left: pipbar-only column. Canvas resizes to fill vertically.
         left = ctk.CTkFrame(container, fg_color="transparent", width=96)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
@@ -810,22 +866,23 @@ class PomoApp(ctk.CTk):
         self.wide_time = None
         self.wide_task = None
 
-        # Keep the canvas dims in sync with the frame as it resizes.
         def _sync_pipbar(event):
             if self.pipbar is not None and self.pipbar.winfo_exists():
                 self.pipbar.set_size(event.width, event.height)
                 self._update_display()
         self.pipbar.bind("<Configure>", _sync_pipbar)
 
-        # Right: top-bar + session view + task label + controls row at bottom.
+        # ── Right column: top bar, duration steppers, view, chain, controls.
         right = ctk.CTkFrame(container, fg_color="transparent")
         right.pack(side="left", fill="both", expand=True, padx=(10, 0))
 
+        # Top bar: title + all the full-mode icon toggles.
         right_top = ctk.CTkFrame(right, fg_color="transparent")
         right_top.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(right_top, text="pomo", font=("Inter", 16, "bold"),
                      text_color=C["text"]).pack(side="left", padx=4)
-        ctk.CTkButton(right_top, text="🗖", width=28, height=28,
+        # Same order as full mode (📊 🎨 📋 ⏱ 🔊 🗗), just scaled down.
+        ctk.CTkButton(right_top, text="🗗", width=28, height=28,
                       font=("Inter", 12),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
@@ -836,8 +893,83 @@ class PomoApp(ctk.CTk):
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_sounds)
         self.sound_btn.pack(side="right", padx=(0, 2))
+        ctk.CTkButton(right_top, text="⏱", width=28, height=28,
+                      font=("Inter", 15, "bold"),
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._toggle_durations).pack(side="right", padx=(0, 2))
+        ctk.CTkButton(right_top, text="📋", width=28, height=28,
+                      font=("Inter", 12),
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._toggle_templates).pack(side="right", padx=(0, 2))
+        ctk.CTkButton(right_top, text="🎨", width=28, height=28,
+                      font=("Inter", 12),
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_dim"],
+                      command=self._toggle_themes).pack(side="right", padx=(0, 2))
+        self.stats_toggle_btn = ctk.CTkButton(
+            right_top, text="📊", width=28, height=28, font=("Inter", 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_stats)
+        self.stats_toggle_btn.pack(side="right", padx=(0, 2))
 
-        # Controls pinned to the bottom of the right column.
+        # Compact duration steppers (same controls as full mode's).
+        # Collapsible via ⏱ toggle — hidden by default.
+        dur_frame = ctk.CTkFrame(right, fg_color="transparent")
+        self.dur_frame = dur_frame
+        self._dur_pack_args = {"fill": "x", "padx": 4, "pady": (2, 4)}
+
+        steppers_row = ctk.CTkFrame(dur_frame, fg_color="transparent")
+        steppers_row.pack(fill="x")
+
+        self.dur_labels = {}
+        for label, key, color in [("Focus", "work", C["work"]),
+                                   ("Short", "short_break", C["break"]),
+                                   ("Long", "long_break", C["long_break"])]:
+            col = ctk.CTkFrame(steppers_row, fg_color="transparent")
+            col.pack(side="left", expand=True)
+
+            ctk.CTkLabel(col, text=label, font=("Inter", 9),
+                         text_color=C["text_muted"]).pack()
+
+            row = ctk.CTkFrame(col, fg_color="transparent")
+            row.pack()
+
+            ctk.CTkButton(row, text="−", width=18, height=18, font=("Inter", 11),
+                          corner_radius=9, fg_color=C["surface"],
+                          hover_color=C["surface_light"], text_color=C["text_dim"],
+                          command=lambda k=key: self._adjust_duration(k, -1)
+                          ).pack(side="left", padx=1)
+
+            dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 11, "bold"),
+                                   text_color=color, width=30,
+                                   cursor="sb_v_double_arrow")
+            dur_lbl.pack(side="left", padx=2)
+            self.dur_labels[key] = dur_lbl
+            dur_lbl.bind("<Button-1>", lambda e, k=key: self._drag_start(e, k))
+            dur_lbl.bind("<B1-Motion>", self._drag_motion)
+            dur_lbl.bind("<ButtonRelease-1>", self._drag_end)
+            dur_lbl.bind("<Double-Button-1>",
+                         lambda e, k=key, lbl=label: self._prompt_duration(k, lbl))
+
+            ctk.CTkButton(row, text="+", width=18, height=18, font=("Inter", 11),
+                          corner_radius=9, fg_color=C["surface"],
+                          hover_color=C["surface_light"], text_color=C["text_dim"],
+                          command=lambda k=key: self._adjust_duration(k, 1)
+                          ).pack(side="left", padx=1)
+
+        self._update_dur_labels()
+        self._build_pattern_builder(dur_frame, compact=True)
+
+        self.dur_divider = ctk.CTkFrame(right, fg_color=C["surface_light"], height=1)
+        self.dur_divider.pack(fill="x", padx=4, pady=(2, 2))
+
+        if self.durations_open:
+            dur_frame.pack(before=self.dur_divider, **self._dur_pack_args)
+
+        # Controls pinned to the bottom of the right column (packed first so
+        # `side="bottom"` anchors them there; widgets below stack upward).
         ctrl = ctk.CTkFrame(right, fg_color="transparent")
         ctrl.pack(side="bottom", fill="x", pady=(6, 0))
         self.start_btn = ctk.CTkButton(
@@ -857,18 +989,28 @@ class PomoApp(ctk.CTk):
                       text_color=C["text_dim"],
                       command=self._skip_session).pack(side="left", padx=(2, 0))
 
-        # Current-session label, above the controls.
+        # Current-session label and chain toggle sit above the controls.
         self.wide_task = ctk.CTkLabel(
             right, text="", font=("Inter", 12),
             text_color=C["text_dim"], anchor="w")
         self.wide_task.pack(side="bottom", fill="x", pady=(4, 0))
 
-        # Session view fills the remaining space between top bar and controls.
-        self.bottom = right
+        self.chain_var = ctk.BooleanVar(value=self.chain_auto_start)
+        ctk.CTkCheckBox(right, text="Auto-start next session",
+                        font=("Inter", 10), text_color=C["text_muted"],
+                        variable=self.chain_var, height=16,
+                        checkbox_width=14, checkbox_height=14,
+                        fg_color=C["work"], hover_color=C["work_dim"],
+                        border_color=C["surface_light"],
+                        command=self._toggle_chain
+                        ).pack(side="bottom", anchor="w", pady=(4, 0), padx=4)
+
+        # View container — session list / stats / theme picker swap here.
+        self.bottom = ctk.CTkFrame(right, fg_color="transparent")
+        self.bottom.pack(fill="both", expand=True)
         self._build_session_view()
 
-        # Stubs.
-        self.dur_labels = {}
+        # Full-mode-only widgets that wide doesn't use.
         self.stats_bar = None
         self.today_label = None
 
@@ -877,6 +1019,13 @@ class PomoApp(ctk.CTk):
         order = ["full", "wide", "bar"]
         self.mode = order[(order.index(self.mode) + 1) % len(order)]
         self._persist_prefs()
+        # Cancel any pending auto-swap — the user explicitly picked a mode.
+        if getattr(self, "_resize_job", None):
+            self.after_cancel(self._resize_job)
+            self._resize_job = None
+        # Brief suppression window so Configure events from the geometry
+        # change don't immediately override the user's choice.
+        self._suppress_auto_swap_until = self.tk.call("clock", "milliseconds") + 500
         self._apply_mode_geometry()
         for w in self.winfo_children():
             w.destroy()
@@ -903,8 +1052,98 @@ class PomoApp(ctk.CTk):
         prefs["chain_auto_start"] = self.chain_auto_start
         prefs["sounds_enabled"] = self.sounds_enabled
         prefs["mode"] = self.mode
+        prefs["durations_open"] = self.durations_open
         prefs.pop("compact", None)
         save_json(PREFS_FILE, prefs)
+
+    def _push_pattern(self, focus_n: int, short_n: int, long_n: int):
+        """Append a pomo pattern: interleaves focus+short, then appends longs.
+
+        4/3/1 → F S F S F S F L.
+        """
+        focus_n = max(0, min(99, focus_n))
+        short_n = max(0, min(99, short_n))
+        long_n = max(0, min(99, long_n))
+        if focus_n + short_n + long_n == 0:
+            return
+        self._push_undo()
+        for i in range(focus_n):
+            self.sessions.append({"type": "work", "name": "Focus", "done": False,
+                                  "duration": self.durations["work"]})
+            if i < focus_n - 1 and i < short_n:
+                self.sessions.append({"type": "short_break",
+                                      "name": "Short Break", "done": False,
+                                      "duration": self.durations["short_break"]})
+        for _ in range(long_n):
+            self.sessions.append({"type": "long_break", "name": "Long Break",
+                                  "done": False,
+                                  "duration": self.durations["long_break"]})
+        if self.current_index == -1:
+            self.current_index = self._first_pending_index()
+            if self.current_index >= 0:
+                self.session_type = SessionType(
+                    self.sessions[self.current_index]["type"])
+                self.remaining_seconds = self._current_session_seconds()
+                self.total_seconds = self.remaining_seconds
+                self._update_button_color()
+        self._save_sessions()
+        self._rebuild_session_list()
+        self._update_display()
+
+    def _build_pattern_builder(self, parent, compact=False):
+        """3 small counters (F/S/L) + Push button, centered under the steppers."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(6, 2))
+
+        # Inner frame takes natural width and is centered within `row`.
+        inner = ctk.CTkFrame(row, fg_color="transparent")
+        inner.pack()
+
+        entries = {}
+        for label, key, color, default in [
+            ("F", "focus", C["work"], 4),
+            ("S", "short", C["break"], 3),
+            ("L", "long", C["long_break"], 1),
+        ]:
+            cell = ctk.CTkFrame(inner, fg_color="transparent")
+            cell.pack(side="left", padx=3)
+            ctk.CTkLabel(cell, text=label, font=("Inter", 10, "bold"),
+                         text_color=color, width=12).pack(side="left")
+            entry = ctk.CTkEntry(cell, width=30, height=22,
+                                 font=("Inter", 11, "bold"),
+                                 fg_color=C["surface"], border_width=0,
+                                 text_color=C["text"], justify="center")
+            entry.insert(0, str(default))
+            entry.pack(side="left")
+            entries[key] = entry
+
+        def do_push():
+            def parse(e):
+                try:
+                    return max(0, int(e.get().strip()))
+                except ValueError:
+                    return 0
+            self._push_pattern(parse(entries["focus"]),
+                               parse(entries["short"]),
+                               parse(entries["long"]))
+
+        ctk.CTkButton(inner, text="Push pattern", height=22,
+                      font=("Inter", 10, "bold"), corner_radius=11,
+                      fg_color=C["work"], hover_color=C["work_dim"],
+                      text_color="#ffffff",
+                      command=do_push).pack(side="left", padx=(10, 0))
+
+    def _toggle_durations(self):
+        self.durations_open = not self.durations_open
+        self._persist_prefs()
+        dur = getattr(self, "dur_frame", None)
+        divider = getattr(self, "dur_divider", None)
+        if dur is None or divider is None or not dur.winfo_exists():
+            return
+        if self.durations_open:
+            dur.pack(before=divider, **self._dur_pack_args)
+        else:
+            dur.pack_forget()
 
     def _dismiss_inline_entry(self, event):
         """Click off an open inline entry to commit it via FocusOut."""
@@ -950,6 +1189,10 @@ class PomoApp(ctk.CTk):
 
     def _maybe_swap_mode(self, h: int):
         self._resize_job = None
+        # Honor the short suppression window after a manual cycle.
+        deadline = getattr(self, "_suppress_auto_swap_until", 0)
+        if deadline and self.tk.call("clock", "milliseconds") < deadline:
+            return
         # Height-driven fallback to bar mode when the window gets very short.
         # Only auto-swap between "full" and "bar"; "wide" is opt-in only.
         if self.mode == "full" and h <= 200:
