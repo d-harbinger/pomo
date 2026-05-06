@@ -1,49 +1,47 @@
 #!/usr/bin/env python3
-"""Generate a simple Pomo app icon."""
+"""Generate the Pomo app icon.
+
+Lean look: dark rounded surface, thin colored ring (matches the running
+app's stroke weight), small accent dot in the center to echo the
+wordmark's `●`.
+"""
 
 import sys
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 
-def generate_icon(output_path: str):
-    size = 256
+def generate_icon(output_path: str, size: int = 256):
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Background circle
-    pad = 8
-    draw.ellipse([pad, pad, size - pad, size - pad], fill="#1a1a2e")
+    bg = "#1a1a2e"
+    accent = "#e94560"
+    accent_dim = "#8b2a3a"
 
-    # Progress arc (decorative, ~75%)
-    draw.arc(
-        [pad + 12, pad + 12, size - pad - 12, size - pad - 12],
-        start=-90, end=180,
-        fill="#e94560", width=14,
+    # Rounded surface — slightly inset so the ring has breathing room.
+    pad = 12
+    draw.rounded_rectangle(
+        [pad, pad, size - pad, size - pad],
+        radius=size // 6,
+        fill=bg,
     )
 
-    # Background ring for remaining portion
-    draw.arc(
-        [pad + 12, pad + 12, size - pad - 12, size - pad - 12],
-        start=180, end=270,
-        fill="#8b2a3a", width=14,
-    )
+    # Ring — thin (~size/22) for the lean aesthetic. ~72% progress
+    # arc on a dim track so the icon reads as a timer mid-run.
+    ring_pad = pad + 26
+    ring_w = max(6, size // 22)
+    box = [ring_pad, ring_pad, size - ring_pad, size - ring_pad]
+    draw.arc(box, start=0, end=360, fill=accent_dim, width=ring_w)
+    draw.arc(box, start=-90, end=-90 + int(360 * 0.72),
+             fill=accent, width=ring_w)
 
-    # Center text
-    try:
-        font = ImageFont.truetype("/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf", 64)
-    except (OSError, IOError):
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
-        except (OSError, IOError):
-            font = ImageFont.load_default()
-
-    text = "P"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(
-        ((size - tw) / 2, (size - th) / 2 - 6),
-        text, fill="#eaeaea", font=font,
+    # Center accent dot — matches the wordmark's `●`.
+    dot_r = max(8, size // 18)
+    cx, cy = size // 2, size // 2
+    draw.ellipse(
+        [cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r],
+        fill=accent,
     )
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
