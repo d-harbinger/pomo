@@ -8,6 +8,7 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import tkinter.font as tkfont
 import wave
 from datetime import date, datetime
 from enum import Enum
@@ -19,6 +20,47 @@ try:
     from plyer import notification as plyer_notify
 except ImportError:
     plyer_notify = None
+
+
+# ── Fonts ────────────────────────────────────────────────────────────────────
+#
+# Font names are referenced as module globals (FONT_UI / FONT_MONO) so a
+# single call to `_resolve_fonts(root)` at startup can pick the best
+# available family on this system. Inter and JetBrains Mono ship on few
+# Linux distros — falling back to the system's actual sans/mono prevents
+# Tk from substituting a font with very different metrics, which is what
+# breaks fixed-width buttons and `pack_propagate(False)` rows on Ubuntu.
+
+FONT_UI = "Inter"
+FONT_MONO = "JetBrains Mono"
+
+_UI_PRIORITY = ("Inter", "Cantarell", "Ubuntu", "Noto Sans",
+                "Liberation Sans", "DejaVu Sans", "Segoe UI",
+                "Helvetica Neue", "Helvetica", "Arial", "TkDefaultFont")
+_MONO_PRIORITY = ("JetBrains Mono", "Fira Code", "Cascadia Mono",
+                  "Source Code Pro", "Hack", "Ubuntu Mono",
+                  "DejaVu Sans Mono", "Liberation Mono", "Menlo",
+                  "Consolas", "Courier New", "TkFixedFont")
+
+
+def _resolve_fonts(root):
+    """Pick the best available UI and mono font for this system.
+
+    Must run after a Tk root exists but before any widgets are built so
+    captured font tuples reference the resolved name."""
+    global FONT_UI, FONT_MONO
+    try:
+        available = set(tkfont.families(root))
+    except Exception:
+        return
+    for fam in _UI_PRIORITY:
+        if fam in available or fam.startswith("Tk"):
+            FONT_UI = fam
+            break
+    for fam in _MONO_PRIORITY:
+        if fam in available or fam.startswith("Tk"):
+            FONT_MONO = fam
+            break
 
 
 # ── Sound ────────────────────────────────────────────────────────────────────
@@ -86,9 +128,9 @@ SESSIONS_FILE = DATA_DIR / "sessions.json"
 TEMPLATES_FILE = DATA_DIR / "templates.json"
 TEMPLATE_SLOTS = 5
 
-DEFAULT_WORK = 25
-DEFAULT_SHORT_BREAK = 5
-DEFAULT_LONG_BREAK = 15
+DEFAULT_WORK = 45
+DEFAULT_SHORT_BREAK = 10
+DEFAULT_LONG_BREAK = 20
 
 
 # ── Persistence ──────────────────────────────────────────────────────────────
@@ -218,9 +260,9 @@ class RingCanvas(ctk.CTkCanvas):
         label_font_size = max(8, int(self.size * 0.05))
         offset = int(self.size * 0.08)
         self.create_text(cx, cy - offset / 2, text=time_text, fill=C["text"],
-                         font=("JetBrains Mono", time_font_size, "bold"))
+                         font=(FONT_MONO, time_font_size, "bold"))
         self.create_text(cx, cy + offset + label_font_size, text=label,
-                         fill=C["text_dim"], font=("Inter", label_font_size))
+                         fill=C["text_dim"], font=(FONT_UI, label_font_size))
 
 
 # ── Pipped bar (retro "health bar" timer for wide mode) ─────────────────────
@@ -279,13 +321,18 @@ class PipBar(ctk.CTkCanvas):
         cols = max(1, self.cols)
         rows = (total_min + cols - 1) // cols
 
-        # Time readout at the top. "00:00" is ~3× the font size in mono,
-        # so size the font to fit the canvas width.
-        time_font_size = max(12, int((self.w - 8) / 3))
+        # Time readout at the top. Glyph metrics vary across mono fonts
+        # (JetBrains Mono ≈ 0.6em, Hack/DejaVu/Ubuntu Mono wider), so
+        # derive the right size from an actual measurement: render at a
+        # known size, then scale linearly to fit the canvas width.
+        avail = max(20, self.w - 8)
+        probe = tkfont.Font(family=FONT_MONO, size=20, weight="bold")
+        ref_w = max(1, probe.measure(time_text))
+        time_font_size = max(10, min(int(avail / 3), int(20 * avail / ref_w)))
         time_h = time_font_size + 14
         self.create_text(self.w / 2, time_h / 2, text=time_text,
                          fill=C["text"],
-                         font=("JetBrains Mono", time_font_size, "bold"))
+                         font=(FONT_MONO, time_font_size, "bold"))
 
         # Rounded bezel around the pip area.
         pad = 3
@@ -382,7 +429,7 @@ class SessionRow(ctk.CTkFrame):
         # so users can't move the in-progress item out from under the timer.
         draggable = on_drag_start and not is_done and not is_active
         handle_text = "⋮⋮" if draggable else " "
-        handle = ctk.CTkLabel(self, text=handle_text, font=("Inter", 11),
+        handle = ctk.CTkLabel(self, text=handle_text, font=(FONT_UI, 11),
                               width=14, text_color=C["text_muted"],
                               fg_color="transparent",
                               cursor="fleur" if draggable else "")
@@ -393,11 +440,11 @@ class SessionRow(ctk.CTkFrame):
             handle.bind("<B1-Motion>", lambda e: on_drag_motion(e.y_root))
             handle.bind("<ButtonRelease-1>", lambda e: on_drag_end(e.y_root))
 
-        ctk.CTkLabel(self, text=marker, font=("Inter", 14), width=20,
+        ctk.CTkLabel(self, text=marker, font=(FONT_UI, 14), width=20,
                      text_color=dot_color, fg_color="transparent"
                      ).pack(side="left", padx=(2, 2))
 
-        font_spec = ("Inter", 11, "italic") if is_break else ("Inter", 13)
+        font_spec = (FONT_UI, 11, "italic") if is_break else (FONT_UI, 13)
         name_lbl = ctk.CTkLabel(self, text=name, font=font_spec,
                                 text_color=text_color, fg_color="transparent",
                                 anchor="w")
@@ -408,7 +455,7 @@ class SessionRow(ctk.CTkFrame):
 
         if not is_done and not is_active and on_remove:
             ctk.CTkButton(self, text="×", width=22, height=22,
-                          font=("Inter", 14), corner_radius=11,
+                          font=(FONT_UI, 14), corner_radius=11,
                           fg_color="transparent", hover_color=C["surface_light"],
                           text_color=C["text_muted"], command=on_remove
                           ).pack(side="right", padx=(0, 4))
@@ -418,13 +465,13 @@ class SessionRow(ctk.CTkFrame):
         if duration is not None:
             if not is_done and on_duration_change:
                 ctk.CTkButton(self, text="+", width=18, height=18,
-                              font=("Inter", 11, "bold"), corner_radius=9,
+                              font=(FONT_UI, 11, "bold"), corner_radius=9,
                               fg_color="transparent", hover_color=C["surface_light"],
                               text_color=active_color,
                               command=lambda: on_duration_change(1)
                               ).pack(side="right", padx=(0, 2))
                 dur_lbl = ctk.CTkLabel(self, text=f"{duration}m",
-                                       font=("Inter", 11, "bold"),
+                                       font=(FONT_UI, 11, "bold"),
                                        text_color=active_color, width=30,
                                        cursor="sb_v_double_arrow",
                                        fg_color="transparent")
@@ -457,13 +504,13 @@ class SessionRow(ctk.CTkFrame):
                     dur_lbl.bind("<B1-Motion>", on_motion)
                     dur_lbl.bind("<ButtonRelease-1>", on_release)
                 ctk.CTkButton(self, text="−", width=18, height=18,
-                              font=("Inter", 11, "bold"), corner_radius=9,
+                              font=(FONT_UI, 11, "bold"), corner_radius=9,
                               fg_color="transparent", hover_color=C["surface_light"],
                               text_color=active_color,
                               command=lambda: on_duration_change(-1)
                               ).pack(side="right", padx=(2, 0))
             else:
-                ctk.CTkLabel(self, text=f"{duration}m", font=("Inter", 11),
+                ctk.CTkLabel(self, text=f"{duration}m", font=(FONT_UI, 11),
                              text_color=C["text_muted"], width=36,
                              fg_color="transparent").pack(side="right", padx=(0, 8))
 
@@ -564,12 +611,29 @@ class PomoApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
+        # Resolve fonts now — must happen before any widget tuple captures
+        # the FONT_UI / FONT_MONO globals.
+        _resolve_fonts(self)
+
         self.stats = Stats()
         self.sounds = Sounds()
         self._editing_index = -1
         self._undo_stack = []  # list of (sessions snapshot, current_index) tuples
-        self.durations = {"work": DEFAULT_WORK, "short_break": DEFAULT_SHORT_BREAK,
-                          "long_break": DEFAULT_LONG_BREAK}
+
+        # Load prefs first so durations and pattern defaults survive restarts.
+        prefs = load_json(PREFS_FILE, {})
+        self.durations = {
+            "work": self._coerce_minutes(prefs.get("dur_work"), DEFAULT_WORK),
+            "short_break": self._coerce_minutes(
+                prefs.get("dur_short_break"), DEFAULT_SHORT_BREAK),
+            "long_break": self._coerce_minutes(
+                prefs.get("dur_long_break"), DEFAULT_LONG_BREAK),
+        }
+        self.pattern_counts = {
+            "focus": self._coerce_count(prefs.get("pattern_focus"), 4),
+            "short": self._coerce_count(prefs.get("pattern_short"), 3),
+            "long": self._coerce_count(prefs.get("pattern_long"), 1),
+        }
         self.timer_state = TimerState.IDLE
         self.session_type = SessionType.WORK
         self.remaining_seconds = self.durations["work"] * 60
@@ -584,8 +648,6 @@ class PomoApp(ctk.CTk):
             self.total_seconds = self.remaining_seconds
         self._view = "sessions"  # "sessions" | "stats" | "themes"
 
-        # Load prefs (theme + toggles).
-        prefs = load_json(PREFS_FILE, {})
         theme_name = prefs.get("theme", "midnight")
         if theme_name in THEMES:
             self.theme_name = theme_name
@@ -594,6 +656,7 @@ class PomoApp(ctk.CTk):
             self.theme_name = "midnight"
         self.chain_auto_start = bool(prefs.get("chain_auto_start", False))
         self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
+        self.notifications_enabled = bool(prefs.get("notifications_enabled", True))
         self.durations_open = bool(prefs.get("durations_open", False))
         # mode: "full" (default), "wide" (ring left + stack right), "bar" (thin).
         self.mode = prefs.get("mode")
@@ -644,40 +707,46 @@ class PomoApp(ctk.CTk):
         top = ctk.CTkFrame(self, fg_color="transparent", height=40)
         top.pack(fill="x", padx=16, pady=(12, 0))
 
-        ctk.CTkLabel(top, text="pomo", font=("Inter", 20, "bold"),
+        ctk.CTkLabel(top, text="pomo", font=(FONT_UI, 20, "bold"),
                      text_color=C["text"]).pack(side="left")
 
         # Icon cluster, packed so visual order left→right is:
-        # 📊 stats · 🎨 theme · 📋 templates · ⏱ durations · 🔊 sound · 🗗 mode cycle.
+        # 📊 stats · 🎨 theme · 📋 templates · ⏱ durations · 🔊 sound · 🔔 notif · 🗗 mode cycle.
         # With side="right", pack order is reverse of visual order.
         ctk.CTkButton(
-            top, text="🗗", width=36, height=36, font=("Inter", 14),
+            top, text="🗗", width=36, height=36, font=(FONT_UI, 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._cycle_mode
         ).pack(side="right")
+        self.notif_btn = ctk.CTkButton(
+            top, text="🔔" if self.notifications_enabled else "🔕",
+            width=36, height=36, font=(FONT_UI, 14),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_notifications)
+        self.notif_btn.pack(side="right", padx=(0, 4))
         self.sound_btn = ctk.CTkButton(
             top, text="🔊" if self.sounds_enabled else "🔇",
-            width=36, height=36, font=("Inter", 14),
+            width=36, height=36, font=(FONT_UI, 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_sounds)
         self.sound_btn.pack(side="right", padx=(0, 4))
         ctk.CTkButton(
-            top, text="⏱", width=36, height=36, font=("Inter", 18, "bold"),
+            top, text="⏱", width=36, height=36, font=(FONT_UI, 18, "bold"),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_durations
         ).pack(side="right", padx=(0, 4))
         ctk.CTkButton(
-            top, text="📋", width=36, height=36, font=("Inter", 14),
+            top, text="📋", width=36, height=36, font=(FONT_UI, 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_templates
         ).pack(side="right", padx=(0, 4))
         ctk.CTkButton(
-            top, text="🎨", width=36, height=36, font=("Inter", 14),
+            top, text="🎨", width=36, height=36, font=(FONT_UI, 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_themes
         ).pack(side="right", padx=(0, 4))
         self.stats_toggle_btn = ctk.CTkButton(
-            top, text="📊", width=36, height=36, font=("Inter", 16),
+            top, text="📊", width=36, height=36, font=(FONT_UI, 16),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_stats)
         self.stats_toggle_btn.pack(side="right", padx=(0, 4))
@@ -691,19 +760,19 @@ class PomoApp(ctk.CTk):
         ctrl.pack(pady=(0, 8))
 
         self.start_btn = ctk.CTkButton(
-            ctrl, text="Start", font=("Inter", 16, "bold"),
+            ctrl, text="Start", font=(FONT_UI, 16, "bold"),
             width=130, height=42, corner_radius=21,
             fg_color=C["work"], hover_color=C["work_dim"],
             text_color="#ffffff", command=self._toggle_timer)
         self.start_btn.pack(side="left", padx=5)
 
-        ctk.CTkButton(ctrl, text="Reset", font=("Inter", 13),
+        ctk.CTkButton(ctrl, text="Reset", font=(FONT_UI, 13),
                       width=70, height=42, corner_radius=21,
                       fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._reset_timer).pack(side="left", padx=5)
 
-        ctk.CTkButton(ctrl, text="Skip", font=("Inter", 13),
+        ctk.CTkButton(ctrl, text="Skip", font=(FONT_UI, 13),
                       width=60, height=42, corner_radius=21,
                       fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"],
@@ -714,7 +783,7 @@ class PomoApp(ctk.CTk):
         chain_row.pack(pady=(0, 2))
         self.chain_var = ctk.BooleanVar(value=self.chain_auto_start)
         ctk.CTkCheckBox(chain_row, text="Auto-start next session",
-                        font=("Inter", 10), text_color=C["text_muted"],
+                        font=(FONT_UI, 10), text_color=C["text_muted"],
                         variable=self.chain_var, height=16,
                         checkbox_width=14, checkbox_height=14,
                         fg_color=C["work"], hover_color=C["work_dim"],
@@ -738,19 +807,19 @@ class PomoApp(ctk.CTk):
             col = ctk.CTkFrame(steppers_row, fg_color="transparent")
             col.pack(side="left", expand=True)
 
-            ctk.CTkLabel(col, text=label, font=("Inter", 10),
+            ctk.CTkLabel(col, text=label, font=(FONT_UI, 10),
                          text_color=C["text_muted"]).pack()
 
             row = ctk.CTkFrame(col, fg_color="transparent")
             row.pack()
 
-            ctk.CTkButton(row, text="−", width=22, height=22, font=("Inter", 13),
+            ctk.CTkButton(row, text="−", width=22, height=22, font=(FONT_UI, 13),
                           corner_radius=11, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
                           command=lambda k=key: self._adjust_duration(k, -1)
                           ).pack(side="left", padx=1)
 
-            dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 12, "bold"),
+            dur_lbl = ctk.CTkLabel(row, text="", font=(FONT_UI, 12, "bold"),
                                    text_color=color, width=36, cursor="sb_v_double_arrow")
             dur_lbl.pack(side="left", padx=2)
             self.dur_labels[key] = dur_lbl
@@ -761,7 +830,7 @@ class PomoApp(ctk.CTk):
             dur_lbl.bind("<Double-Button-1>",
                          lambda e, k=key, lbl=label: self._prompt_duration(k, lbl))
 
-            ctk.CTkButton(row, text="+", width=22, height=22, font=("Inter", 13),
+            ctk.CTkButton(row, text="+", width=22, height=22, font=(FONT_UI, 13),
                           corner_radius=11, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
                           command=lambda k=key: self._adjust_duration(k, 1)
@@ -790,7 +859,7 @@ class PomoApp(ctk.CTk):
         self.stats_bar.pack(fill="x", padx=24, pady=(4, 12))
         self.stats_bar.pack_propagate(False)
 
-        self.today_label = ctk.CTkLabel(self.stats_bar, text="", font=("Inter", 11),
+        self.today_label = ctk.CTkLabel(self.stats_bar, text="", font=(FONT_UI, 11),
                                         text_color=C["text_dim"])
         self.today_label.pack(expand=True)
         self._update_today_stats()
@@ -813,31 +882,31 @@ class PomoApp(ctk.CTk):
 
         # Mono time label (no ring in bar mode).
         self.compact_time = ctk.CTkLabel(
-            bar, text="00:00", font=("JetBrains Mono", 22, "bold"),
+            bar, text="00:00", font=(FONT_MONO, 22, "bold"),
             text_color=C["text"])
         self.compact_time.pack(side="left", padx=(12, 6))
 
         # Progress bar underneath feels cluttered; use a thin accent label
         # (session name or break type) instead.
         self.compact_task = ctk.CTkLabel(
-            bar, text="", font=("Inter", 11),
+            bar, text="", font=(FONT_UI, 11),
             text_color=C["text_dim"], anchor="w")
         self.compact_task.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         self.start_btn = ctk.CTkButton(
-            bar, text="Start", font=("Inter", 11, "bold"),
+            bar, text="Start", font=(FONT_UI, 11, "bold"),
             width=56, height=28, corner_radius=14,
             fg_color=C["work"], hover_color=C["work_dim"],
             text_color="#ffffff", command=self._toggle_timer)
         self.start_btn.pack(side="left", padx=2)
 
-        ctk.CTkButton(bar, text="Skip", font=("Inter", 11),
+        ctk.CTkButton(bar, text="Skip", font=(FONT_UI, 11),
                       width=42, height=28, corner_radius=14,
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._skip_session).pack(side="left", padx=2)
 
-        ctk.CTkButton(bar, text="🗗", width=28, height=28, font=("Inter", 11),
+        ctk.CTkButton(bar, text="🗗", width=28, height=28, font=(FONT_UI, 11),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._cycle_mode).pack(side="right", padx=(2, 8))
@@ -879,37 +948,43 @@ class PomoApp(ctk.CTk):
         # Top bar: title + all the full-mode icon toggles.
         right_top = ctk.CTkFrame(right, fg_color="transparent")
         right_top.pack(fill="x", pady=(0, 4))
-        ctk.CTkLabel(right_top, text="pomo", font=("Inter", 16, "bold"),
+        ctk.CTkLabel(right_top, text="pomo", font=(FONT_UI, 16, "bold"),
                      text_color=C["text"]).pack(side="left", padx=4)
-        # Same order as full mode (📊 🎨 📋 ⏱ 🔊 🗗), just scaled down.
+        # Same order as full mode (📊 🎨 📋 ⏱ 🔊 🔔 🗗), just scaled down.
         ctk.CTkButton(right_top, text="🗗", width=28, height=28,
-                      font=("Inter", 12),
+                      font=(FONT_UI, 12),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._cycle_mode).pack(side="right")
+        self.notif_btn = ctk.CTkButton(
+            right_top, text="🔔" if self.notifications_enabled else "🔕",
+            width=28, height=28, font=(FONT_UI, 12),
+            fg_color="transparent", hover_color=C["surface_light"],
+            text_color=C["text_dim"], command=self._toggle_notifications)
+        self.notif_btn.pack(side="right", padx=(0, 2))
         self.sound_btn = ctk.CTkButton(
             right_top, text="🔊" if self.sounds_enabled else "🔇",
-            width=28, height=28, font=("Inter", 12),
+            width=28, height=28, font=(FONT_UI, 12),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_sounds)
         self.sound_btn.pack(side="right", padx=(0, 2))
         ctk.CTkButton(right_top, text="⏱", width=28, height=28,
-                      font=("Inter", 15, "bold"),
+                      font=(FONT_UI, 15, "bold"),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._toggle_durations).pack(side="right", padx=(0, 2))
         ctk.CTkButton(right_top, text="📋", width=28, height=28,
-                      font=("Inter", 12),
+                      font=(FONT_UI, 12),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._toggle_templates).pack(side="right", padx=(0, 2))
         ctk.CTkButton(right_top, text="🎨", width=28, height=28,
-                      font=("Inter", 12),
+                      font=(FONT_UI, 12),
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._toggle_themes).pack(side="right", padx=(0, 2))
         self.stats_toggle_btn = ctk.CTkButton(
-            right_top, text="📊", width=28, height=28, font=("Inter", 14),
+            right_top, text="📊", width=28, height=28, font=(FONT_UI, 14),
             fg_color="transparent", hover_color=C["surface_light"],
             text_color=C["text_dim"], command=self._toggle_stats)
         self.stats_toggle_btn.pack(side="right", padx=(0, 2))
@@ -930,19 +1005,19 @@ class PomoApp(ctk.CTk):
             col = ctk.CTkFrame(steppers_row, fg_color="transparent")
             col.pack(side="left", expand=True)
 
-            ctk.CTkLabel(col, text=label, font=("Inter", 9),
+            ctk.CTkLabel(col, text=label, font=(FONT_UI, 9),
                          text_color=C["text_muted"]).pack()
 
             row = ctk.CTkFrame(col, fg_color="transparent")
             row.pack()
 
-            ctk.CTkButton(row, text="−", width=18, height=18, font=("Inter", 11),
+            ctk.CTkButton(row, text="−", width=18, height=18, font=(FONT_UI, 11),
                           corner_radius=9, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
                           command=lambda k=key: self._adjust_duration(k, -1)
                           ).pack(side="left", padx=1)
 
-            dur_lbl = ctk.CTkLabel(row, text="", font=("Inter", 11, "bold"),
+            dur_lbl = ctk.CTkLabel(row, text="", font=(FONT_UI, 11, "bold"),
                                    text_color=color, width=30,
                                    cursor="sb_v_double_arrow")
             dur_lbl.pack(side="left", padx=2)
@@ -953,7 +1028,7 @@ class PomoApp(ctk.CTk):
             dur_lbl.bind("<Double-Button-1>",
                          lambda e, k=key, lbl=label: self._prompt_duration(k, lbl))
 
-            ctk.CTkButton(row, text="+", width=18, height=18, font=("Inter", 11),
+            ctk.CTkButton(row, text="+", width=18, height=18, font=(FONT_UI, 11),
                           corner_radius=9, fg_color=C["surface"],
                           hover_color=C["surface_light"], text_color=C["text_dim"],
                           command=lambda k=key: self._adjust_duration(k, 1)
@@ -973,17 +1048,17 @@ class PomoApp(ctk.CTk):
         ctrl = ctk.CTkFrame(right, fg_color="transparent")
         ctrl.pack(side="bottom", fill="x", pady=(6, 0))
         self.start_btn = ctk.CTkButton(
-            ctrl, text="Start", font=("Inter", 14, "bold"),
+            ctrl, text="Start", font=(FONT_UI, 14, "bold"),
             height=38, corner_radius=19,
             fg_color=C["work"], hover_color=C["work_dim"],
             text_color="#ffffff", command=self._toggle_timer)
         self.start_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
-        ctk.CTkButton(ctrl, text="Reset", font=("Inter", 12),
+        ctk.CTkButton(ctrl, text="Reset", font=(FONT_UI, 12),
                       width=60, height=38, corner_radius=19,
                       fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=self._reset_timer).pack(side="left", padx=2)
-        ctk.CTkButton(ctrl, text="Skip", font=("Inter", 12),
+        ctk.CTkButton(ctrl, text="Skip", font=(FONT_UI, 12),
                       width=60, height=38, corner_radius=19,
                       fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"],
@@ -991,13 +1066,13 @@ class PomoApp(ctk.CTk):
 
         # Current-session label and chain toggle sit above the controls.
         self.wide_task = ctk.CTkLabel(
-            right, text="", font=("Inter", 12),
+            right, text="", font=(FONT_UI, 12),
             text_color=C["text_dim"], anchor="w")
         self.wide_task.pack(side="bottom", fill="x", pady=(4, 0))
 
         self.chain_var = ctk.BooleanVar(value=self.chain_auto_start)
         ctk.CTkCheckBox(right, text="Auto-start next session",
-                        font=("Inter", 10), text_color=C["text_muted"],
+                        font=(FONT_UI, 10), text_color=C["text_muted"],
                         variable=self.chain_var, height=16,
                         checkbox_width=14, checkbox_height=14,
                         fg_color=C["work"], hover_color=C["work_dim"],
@@ -1042,17 +1117,47 @@ class PomoApp(ctk.CTk):
         if hasattr(self, "sound_btn") and self.sound_btn.winfo_exists():
             self.sound_btn.configure(text="🔊" if self.sounds_enabled else "🔇")
 
+    def _toggle_notifications(self):
+        self.notifications_enabled = not self.notifications_enabled
+        self._persist_prefs()
+        if hasattr(self, "notif_btn") and self.notif_btn.winfo_exists():
+            self.notif_btn.configure(
+                text="🔔" if self.notifications_enabled else "🔕")
+
     def _toggle_chain(self):
         self.chain_auto_start = bool(self.chain_var.get())
         self._persist_prefs()
+
+    @staticmethod
+    def _coerce_minutes(val, default):
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            return default
+        return max(1, min(600, n))
+
+    @staticmethod
+    def _coerce_count(val, default):
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            return default
+        return max(0, min(99, n))
 
     def _persist_prefs(self):
         prefs = load_json(PREFS_FILE, {})
         prefs["theme"] = self.theme_name
         prefs["chain_auto_start"] = self.chain_auto_start
         prefs["sounds_enabled"] = self.sounds_enabled
+        prefs["notifications_enabled"] = self.notifications_enabled
         prefs["mode"] = self.mode
         prefs["durations_open"] = self.durations_open
+        prefs["dur_work"] = self.durations["work"]
+        prefs["dur_short_break"] = self.durations["short_break"]
+        prefs["dur_long_break"] = self.durations["long_break"]
+        prefs["pattern_focus"] = self.pattern_counts["focus"]
+        prefs["pattern_short"] = self.pattern_counts["short"]
+        prefs["pattern_long"] = self.pattern_counts["long"]
         prefs.pop("compact", None)
         save_json(PREFS_FILE, prefs)
 
@@ -1100,20 +1205,20 @@ class PomoApp(ctk.CTk):
         inner.pack()
 
         entries = {}
-        for label, key, color, default in [
-            ("F", "focus", C["work"], 4),
-            ("S", "short", C["break"], 3),
-            ("L", "long", C["long_break"], 1),
+        for label, key, color in [
+            ("F", "focus", C["work"]),
+            ("S", "short", C["break"]),
+            ("L", "long", C["long_break"]),
         ]:
             cell = ctk.CTkFrame(inner, fg_color="transparent")
             cell.pack(side="left", padx=3)
-            ctk.CTkLabel(cell, text=label, font=("Inter", 10, "bold"),
+            ctk.CTkLabel(cell, text=label, font=(FONT_UI, 10, "bold"),
                          text_color=color, width=12).pack(side="left")
             entry = ctk.CTkEntry(cell, width=30, height=22,
-                                 font=("Inter", 11, "bold"),
+                                 font=(FONT_UI, 11, "bold"),
                                  fg_color=C["surface"], border_width=0,
                                  text_color=C["text"], justify="center")
-            entry.insert(0, str(default))
+            entry.insert(0, str(self.pattern_counts[key]))
             entry.pack(side="left")
             entries[key] = entry
 
@@ -1123,12 +1228,15 @@ class PomoApp(ctk.CTk):
                     return max(0, int(e.get().strip()))
                 except ValueError:
                     return 0
-            self._push_pattern(parse(entries["focus"]),
-                               parse(entries["short"]),
-                               parse(entries["long"]))
+            f, s, l = (parse(entries["focus"]),
+                       parse(entries["short"]),
+                       parse(entries["long"]))
+            self.pattern_counts = {"focus": f, "short": s, "long": l}
+            self._persist_prefs()
+            self._push_pattern(f, s, l)
 
         ctk.CTkButton(inner, text="Push pattern", height=22,
-                      font=("Inter", 10, "bold"), corner_radius=11,
+                      font=(FONT_UI, 10, "bold"), corner_radius=11,
                       fg_color=C["work"], hover_color=C["work_dim"],
                       text_color="#ffffff",
                       command=do_push).pack(side="left", padx=(10, 0))
@@ -1243,33 +1351,40 @@ class PomoApp(ctk.CTk):
         self.session_header = ctk.CTkFrame(self.bottom, fg_color="transparent")
         self.session_header.pack(fill="x", padx=24, pady=(4, 0))
 
-        ctk.CTkLabel(self.session_header, text="Sessions", font=("Inter", 14, "bold"),
+        ctk.CTkLabel(self.session_header, text="Sessions", font=(FONT_UI, 14, "bold"),
                      text_color=C["text"]).pack(side="left")
+
+        # Restart: keep the stack but clear done flags so you can rerun it.
+        ctk.CTkButton(self.session_header, text="Restart", width=52, height=22,
+                      font=(FONT_UI, 10), corner_radius=11,
+                      fg_color="transparent", hover_color=C["surface_light"],
+                      text_color=C["text_muted"],
+                      command=self._restart_stack).pack(side="left", padx=(8, 0))
 
         # Clear: wipe the stack. Tucked next to the label so it's out of the way.
         ctk.CTkButton(self.session_header, text="Clear", width=44, height=22,
-                      font=("Inter", 10), corner_radius=11,
+                      font=(FONT_UI, 10), corner_radius=11,
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_muted"],
-                      command=self._clear_stack).pack(side="left", padx=(8, 0))
+                      command=self._clear_stack).pack(side="left", padx=(4, 0))
 
         # Undo: restore the previous stack state (add/remove/clear).
         ctk.CTkButton(self.session_header, text="Undo", width=44, height=22,
-                      font=("Inter", 10), corner_radius=11,
+                      font=(FONT_UI, 10), corner_radius=11,
                       fg_color="transparent", hover_color=C["surface_light"],
                       text_color=C["text_muted"],
                       command=self._undo).pack(side="left", padx=(4, 0))
 
         # Primary: add a work session (inline name entry, same as before).
         ctk.CTkButton(self.session_header, text="+", width=32, height=28,
-                      font=("Inter", 16, "bold"), corner_radius=14,
+                      font=(FONT_UI, 16, "bold"), corner_radius=14,
                       fg_color=C["work"], hover_color=C["work_dim"],
                       text_color="#ffffff",
                       command=self._add_session_prompt).pack(side="right", padx=(4, 0))
 
         # Secondary: insert a long break at end with default duration.
         ctk.CTkButton(self.session_header, text="L", width=26, height=26,
-                      font=("Inter", 11, "bold"), corner_radius=13,
+                      font=(FONT_UI, 11, "bold"), corner_radius=13,
                       fg_color=C["long_break"], hover_color=C["long_break_dim"],
                       text_color="#ffffff",
                       command=lambda: self._add_break("long_break")
@@ -1277,7 +1392,7 @@ class PomoApp(ctk.CTk):
 
         # Secondary: insert a short break at end with default duration.
         ctk.CTkButton(self.session_header, text="S", width=26, height=26,
-                      font=("Inter", 11, "bold"), corner_radius=13,
+                      font=(FONT_UI, 11, "bold"), corner_radius=13,
                       fg_color=C["break"], hover_color=C["break_dim"],
                       text_color="#ffffff",
                       command=lambda: self._add_break("short_break")
@@ -1286,7 +1401,7 @@ class PomoApp(ctk.CTk):
         # Running-total row: sum of all pending session durations.
         total_row = ctk.CTkFrame(self.bottom, fg_color="transparent")
         total_row.pack(fill="x", padx=24, pady=(2, 0))
-        self.total_label = ctk.CTkLabel(total_row, text="", font=("Inter", 10),
+        self.total_label = ctk.CTkLabel(total_row, text="", font=(FONT_UI, 10),
                                         text_color=C["text_muted"])
         self.total_label.pack(side="left")
 
@@ -1357,18 +1472,21 @@ class PomoApp(ctk.CTk):
 
     def _save_to_slot(self, slot: int):
         if not self.sessions:
+            self._flash_template_status(
+                "Stack is empty — add a session first", error=True)
             return
         slots = self._load_templates()
         template_sessions = []
         for s in self.sessions:
             item = {"type": s["type"], "name": s["name"]}
-            if s["type"] != "work" and "duration" in s:
+            if "duration" in s:
                 item["duration"] = s["duration"]
             template_sessions.append(item)
         existing_name = slots[slot]["name"] if slots[slot] else f"Template {slot + 1}"
         slots[slot] = {"name": existing_name, "sessions": template_sessions}
         self._save_templates(slots)
         self._build_template_view_rebuild()
+        self._flash_template_status(f"Saved to {existing_name}")
 
     def _load_from_slot(self, slot: int):
         slots = self._load_templates()
@@ -1380,9 +1498,8 @@ class PomoApp(ctk.CTk):
             t = item.get("type")
             if t not in ("work", "short_break", "long_break"):
                 continue
-            entry = {"type": t, "name": item.get("name") or "Focus", "done": False}
-            if t != "work":
-                entry["duration"] = item.get("duration", self.durations[t])
+            entry = {"type": t, "name": item.get("name") or "Focus", "done": False,
+                     "duration": item.get("duration", self.durations[t])}
             new_sessions.append(entry)
         self.sessions = new_sessions
         self.current_index = self._first_pending_index()
@@ -1412,6 +1529,26 @@ class PomoApp(ctk.CTk):
             self._clear_bottom()
             self._build_template_view()
 
+    def _flash_template_status(self, text: str, error: bool = False):
+        """Show a transient status line in the templates view.
+
+        Survives the rebuild that follows save/delete so the user sees it.
+        """
+        color = C["long_break"] if error else C["break"]
+        self._template_status_pending = (text, color)
+        lbl = getattr(self, "template_status_label", None)
+        if lbl is not None and lbl.winfo_exists():
+            lbl.configure(text=text, text_color=color)
+            self._template_status_pending = None
+            self.after(2500, lambda: self._clear_template_status(lbl))
+
+    def _clear_template_status(self, lbl):
+        try:
+            if lbl.winfo_exists() and lbl.cget("text"):
+                lbl.configure(text="")
+        except Exception:
+            pass
+
     def _build_template_view(self):
         scroll = ScrollFrame(self.bottom)
         scroll.pack(fill="both", expand=True, padx=20, pady=(4, 4))
@@ -1419,12 +1556,20 @@ class PomoApp(ctk.CTk):
 
         header = ctk.CTkFrame(inner, fg_color="transparent")
         header.pack(fill="x", pady=(4, 8), padx=4)
-        ctk.CTkLabel(header, text="Templates", font=("Inter", 14, "bold"),
+        ctk.CTkLabel(header, text="Templates", font=(FONT_UI, 14, "bold"),
                      text_color=C["text"]).pack(side="left")
-        ctk.CTkButton(header, text="← Back", width=60, height=26, font=("Inter", 11),
+        ctk.CTkButton(header, text="← Back", width=60, height=26, font=(FONT_UI, 11),
                       corner_radius=13, fg_color=C["surface"],
                       hover_color=C["surface_light"], text_color=C["text_dim"],
                       command=lambda: self._show_view("sessions")).pack(side="right")
+
+        self.template_status_label = ctk.CTkLabel(
+            inner, text="", font=(FONT_UI, 10), text_color=C["text_muted"])
+        self.template_status_label.pack(fill="x", padx=4, pady=(0, 4))
+        if getattr(self, "_template_status_pending", None):
+            text, color = self._template_status_pending
+            self.template_status_label.configure(text=text, text_color=color)
+            self._template_status_pending = None
 
         slots = self._load_templates()
         for i in range(TEMPLATE_SLOTS):
@@ -1437,7 +1582,7 @@ class PomoApp(ctk.CTk):
             slot_data = slots[i]
             if slot_data:
                 name_lbl = ctk.CTkLabel(top_row, text=slot_data["name"],
-                                        font=("Inter", 13, "bold"),
+                                        font=(FONT_UI, 13, "bold"),
                                         text_color=C["text"], cursor="xterm")
                 name_lbl.pack(side="left")
                 name_lbl.bind("<Button-1>",
@@ -1446,20 +1591,20 @@ class PomoApp(ctk.CTk):
                 work_n = sum(1 for x in slot_data["sessions"] if x.get("type") == "work")
                 break_n = len(slot_data["sessions"]) - work_n
                 detail = f"{work_n} focus · {break_n} break{'s' if break_n != 1 else ''}"
-                ctk.CTkLabel(top_row, text=detail, font=("Inter", 10),
+                ctk.CTkLabel(top_row, text=detail, font=(FONT_UI, 10),
                              text_color=C["text_muted"]).pack(side="right")
             else:
                 ctk.CTkLabel(top_row, text=f"Slot {i + 1}",
-                             font=("Inter", 13),
+                             font=(FONT_UI, 13),
                              text_color=C["text_muted"]).pack(side="left")
-                ctk.CTkLabel(top_row, text="empty", font=("Inter", 10),
+                ctk.CTkLabel(top_row, text="empty", font=(FONT_UI, 10),
                              text_color=C["text_muted"]).pack(side="right")
 
             btn_row = ctk.CTkFrame(card, fg_color="transparent")
             btn_row.pack(fill="x", padx=10, pady=(2, 8))
 
             ctk.CTkButton(btn_row, text="Save current", height=26,
-                          font=("Inter", 11), corner_radius=13,
+                          font=(FONT_UI, 11), corner_radius=13,
                           fg_color=C["work"], hover_color=C["work_dim"],
                           text_color="#ffffff",
                           command=lambda s=i: self._save_to_slot(s)
@@ -1467,13 +1612,13 @@ class PomoApp(ctk.CTk):
 
             if slot_data:
                 ctk.CTkButton(btn_row, text="Load", height=26,
-                              font=("Inter", 11), corner_radius=13,
+                              font=(FONT_UI, 11), corner_radius=13,
                               fg_color=C["break"], hover_color=C["break_dim"],
                               text_color="#ffffff",
                               command=lambda s=i: self._load_from_slot(s)
                               ).pack(side="left", padx=(0, 4))
                 ctk.CTkButton(btn_row, text="×", width=26, height=26,
-                              font=("Inter", 12), corner_radius=13,
+                              font=(FONT_UI, 12), corner_radius=13,
                               fg_color="transparent",
                               hover_color=C["surface_light"],
                               text_color=C["text_muted"],
@@ -1485,7 +1630,7 @@ class PomoApp(ctk.CTk):
     def _edit_slot_name(self, slot: int, widget):
         current = widget.cget("text")
         parent = widget.master
-        entry = ctk.CTkEntry(parent, font=("Inter", 13, "bold"),
+        entry = ctk.CTkEntry(parent, font=(FONT_UI, 13, "bold"),
                              width=180, height=26,
                              fg_color=C["surface_light"], text_color=C["text"],
                              border_width=1, border_color=C["work"])
@@ -1528,9 +1673,9 @@ class PomoApp(ctk.CTk):
 
         header = ctk.CTkFrame(inner, fg_color="transparent")
         header.pack(fill="x", pady=(4, 8), padx=4)
-        ctk.CTkLabel(header, text="Theme", font=("Inter", 14, "bold"),
+        ctk.CTkLabel(header, text="Theme", font=(FONT_UI, 14, "bold"),
                      text_color=C["text"]).pack(side="left")
-        ctk.CTkButton(header, text="← Back", width=60, height=26, font=("Inter", 11),
+        ctk.CTkButton(header, text="← Back", width=60, height=26, font=(FONT_UI, 11),
                       corner_radius=13, fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"],
                       command=lambda: self._show_view("sessions")).pack(side="right")
@@ -1545,15 +1690,15 @@ class PomoApp(ctk.CTk):
             top_row.pack(fill="x", padx=10, pady=(8, 4))
 
             ctk.CTkLabel(top_row, text=name.capitalize(),
-                         font=("Inter", 13, "bold"),
+                         font=(FONT_UI, 13, "bold"),
                          text_color=theme["text"]).pack(side="left")
 
             if name == self.theme_name:
-                ctk.CTkLabel(top_row, text="✓ active", font=("Inter", 10),
+                ctk.CTkLabel(top_row, text="✓ active", font=(FONT_UI, 10),
                              text_color=theme["work"]).pack(side="right")
             else:
                 ctk.CTkButton(top_row, text="Apply", width=60, height=22,
-                              font=("Inter", 10),
+                              font=(FONT_UI, 10),
                               corner_radius=11,
                               fg_color=theme["work"], hover_color=theme["work_dim"],
                               text_color="#ffffff",
@@ -1597,9 +1742,9 @@ class PomoApp(ctk.CTk):
         # Header with back
         header = ctk.CTkFrame(inner, fg_color="transparent")
         header.pack(fill="x", pady=(4, 8), padx=4)
-        ctk.CTkLabel(header, text="Stats", font=("Inter", 14, "bold"),
+        ctk.CTkLabel(header, text="Stats", font=(FONT_UI, 14, "bold"),
                      text_color=C["text"]).pack(side="left")
-        ctk.CTkButton(header, text="← Back", width=60, height=26, font=("Inter", 11),
+        ctk.CTkButton(header, text="← Back", width=60, height=26, font=(FONT_UI, 11),
                       corner_radius=13, fg_color=C["surface"], hover_color=C["surface_light"],
                       text_color=C["text_dim"], command=self._toggle_stats).pack(side="right")
 
@@ -1618,27 +1763,27 @@ class PomoApp(ctk.CTk):
             card = ctk.CTkFrame(cards, fg_color=C["surface"], corner_radius=10)
             card.grid(row=i // 2, column=i % 2, padx=4, pady=4, sticky="nsew")
             cards.grid_columnconfigure(i % 2, weight=1)
-            ctk.CTkLabel(card, text=value, font=("Inter", 18, "bold"),
+            ctk.CTkLabel(card, text=value, font=(FONT_UI, 18, "bold"),
                          text_color=C["text"]).pack(pady=(8, 1))
-            ctk.CTkLabel(card, text=label, font=("Inter", 10),
+            ctk.CTkLabel(card, text=label, font=(FONT_UI, 10),
                          text_color=C["text_dim"]).pack(pady=(0, 8))
 
         # History
-        ctk.CTkLabel(inner, text="Recent", font=("Inter", 12, "bold"),
+        ctk.CTkLabel(inner, text="Recent", font=(FONT_UI, 12, "bold"),
                      text_color=C["text"]).pack(anchor="w", pady=(4, 2), padx=4)
 
         history = load_json(HISTORY_FILE, [])
         if not history:
-            ctk.CTkLabel(inner, text="No sessions yet", font=("Inter", 11),
+            ctk.CTkLabel(inner, text="No sessions yet", font=(FONT_UI, 11),
                          text_color=C["text_muted"]).pack(pady=8, padx=4)
         else:
             for entry in reversed(history[-20:]):
                 row = ctk.CTkFrame(inner, fg_color="transparent")
                 row.pack(fill="x", pady=1, padx=4)
                 ctk.CTkLabel(row, text=f"{entry.get('date', '')} {entry.get('time', '')}",
-                             font=("Inter", 10), text_color=C["text_muted"]).pack(side="left")
+                             font=(FONT_UI, 10), text_color=C["text_muted"]).pack(side="left")
                 ctk.CTkLabel(row, text=f"{entry.get('task', '')} · {entry.get('minutes', 0)}m",
-                             font=("Inter", 10), text_color=C["text_dim"]).pack(side="right")
+                             font=(FONT_UI, 10), text_color=C["text_dim"]).pack(side="right")
 
         scroll.bind_scroll_recursive()
 
@@ -1774,7 +1919,7 @@ class PomoApp(ctk.CTk):
         row.pack(fill="x", pady=1, padx=2)
         row.pack_propagate(False)
 
-        entry = ctk.CTkEntry(row, font=("Inter", 13), height=30,
+        entry = ctk.CTkEntry(row, font=(FONT_UI, 13), height=30,
                              fg_color=C["surface_light"],
                              text_color=C["text"], border_width=0)
         entry.insert(0, current_name)
@@ -1839,6 +1984,27 @@ class PomoApp(ctk.CTk):
         self._rebuild_session_list()
         self._update_display()
 
+    def _restart_stack(self):
+        """Keep the stack but clear all done flags so it can be rerun."""
+        if not self.sessions:
+            return
+        self._push_undo()
+        if self._tick_id:
+            self.after_cancel(self._tick_id)
+            self._tick_id = None
+        self.timer_state = TimerState.IDLE
+        for s in self.sessions:
+            s["done"] = False
+        self.current_index = 0
+        self.session_type = SessionType(self.sessions[0]["type"])
+        self.remaining_seconds = self._current_session_seconds()
+        self.total_seconds = self.remaining_seconds
+        self._save_sessions()
+        self.start_btn.configure(text="Start")
+        self._update_button_color()
+        self._rebuild_session_list()
+        self._update_display()
+
     def _first_pending_index(self):
         for i, s in enumerate(self.sessions):
             if not s["done"]:
@@ -1873,7 +2039,7 @@ class PomoApp(ctk.CTk):
 
         entry = ctk.CTkEntry(
             row, placeholder_text="What's your intent?",
-            font=("Inter", 13), height=34,
+            font=(FONT_UI, 13), height=34,
             fg_color=C["surface_light"], border_color=C["work"],
             text_color=C["text"], placeholder_text_color=C["text_dim"],
             border_width=0)
@@ -2018,7 +2184,7 @@ class PomoApp(ctk.CTk):
 
         if not self.sessions:
             ctk.CTkLabel(inner, text="Add focus blocks and breaks with the buttons above",
-                         font=("Inter", 12), text_color=C["text_muted"],
+                         font=(FONT_UI, 12), text_color=C["text_muted"],
                          wraplength=280).pack(pady=20)
             return
 
@@ -2082,6 +2248,7 @@ class PomoApp(ctk.CTk):
 
     def _set_global_duration(self, key: str, val: int):
         self.durations[key] = val
+        self._persist_prefs()
         self._update_dur_labels()
         if self.timer_state == TimerState.IDLE:
             type_map = {"work": SessionType.WORK,
@@ -2095,7 +2262,7 @@ class PomoApp(ctk.CTk):
     def _inline_edit_on(self, widget, initial: str, accent: str, on_commit):
         """Overlay a short numeric entry on top of `widget` via .place()."""
         parent = widget.master
-        entry = ctk.CTkEntry(parent, font=("Inter", 12, "bold"),
+        entry = ctk.CTkEntry(parent, font=(FONT_UI, 12, "bold"),
                              width=60, height=26,
                              fg_color=C["surface_light"], text_color=accent,
                              border_width=1, border_color=accent, justify="center")
@@ -2135,6 +2302,7 @@ class PomoApp(ctk.CTk):
 
     def _adjust_duration(self, key: str, delta: int):
         self.durations[key] = max(1, self.durations[key] + delta)
+        self._persist_prefs()
         self._update_dur_labels()
         if self.timer_state == TimerState.IDLE:
             type_map = {"work": SessionType.WORK, "short_break": SessionType.SHORT_BREAK,
@@ -2210,10 +2378,12 @@ class PomoApp(ctk.CTk):
             if completed_type == "work":
                 self.stats.record_session(self.durations["work"], cur["name"])
                 self._update_today_stats()
-                notify("Pomo", f"Done: {cur['name']}")
+                if self.notifications_enabled:
+                    notify("Pomo", f"Done: {cur['name']}")
                 self.sounds.play("work", enabled=self.sounds_enabled)
             else:
-                notify("Pomo", "Break's over — time to focus!")
+                if self.notifications_enabled:
+                    notify("Pomo", "Break's over — time to focus!")
                 self.sounds.play("break", enabled=self.sounds_enabled)
 
         # After work, always chain into the next item (usually a break).
@@ -2308,9 +2478,28 @@ class PomoApp(ctk.CTk):
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
+def _apply_scale_override():
+    """Honor POMO_SCALE env var for displays where CTk auto-detect is wrong.
+
+    Common on Ubuntu/Wayland with GNOME fractional scaling. Set
+    POMO_SCALE=1.25 (or similar) to override both widget and window
+    scaling factors. Accepts any float; clamped to a sane range."""
+    raw = os.environ.get("POMO_SCALE")
+    if not raw:
+        return
+    try:
+        scale = float(raw)
+    except ValueError:
+        return
+    scale = max(0.5, min(3.0, scale))
+    ctk.set_widget_scaling(scale)
+    ctk.set_window_scaling(scale)
+
+
 def main():
     ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
+    _apply_scale_override()
     PomoApp().mainloop()
 
 
