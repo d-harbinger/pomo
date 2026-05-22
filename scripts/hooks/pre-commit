@@ -1,0 +1,183 @@
+#!/usr/bin/env bash
+# Pre-commit privacy guard. Blocks the commit if staged changes contain
+# patterns that look like device or host identifiers leaking into the repo.
+#
+# Setup (one-time per machine, per clone):
+#   git config core.hooksPath scripts/hooks
+#
+# Bypass for an individual commit (use sparingly, and only if you've
+# manually confirmed the match is a false positive):
+#   git commit --no-verify
+#
+# Extending the patterns:
+#   • Project-wide patterns lived here, in the BUILTIN_PATTERNS array
+#     below. Add entries that make sense for every developer.
+#   • Per-developer / per-machine patterns go in a gitignored
+#     `.privacy-patterns` file at the repo root, one regex per line
+#     (lines starting with `#` are comments, blank lines ignored).
+#     Use this for your own home-dir path, internal hostnames, device
+#     serials specific to your hardware, etc.
+#
+# Why this exists: a Samsung Galaxy serial got committed into planning
+# docs + commit messages across ~150 commits on 2026-05-14 because no
+# automatic check existed. A git-filter-repo + force-push rewrote the
+# public history, but the lesson is that we shouldn't rely on humans
+# remembering. The hook makes the rule mechanical.
+
+set -e
+
+RED=$'\e[31m'
+YELLOW=$'\e[33m'
+RESET=$'\e[0m'
+
+# Patterns Claude / contributors should never let into commits. Tuned for
+# high specificity (false positives are recoverable with --no-verify;
+# false negatives are the failure mode that just bit us).
+BUILTIN_PATTERNS=(
+  # ===== Host / device identifiers =====
+  # MAC addresses
+  '\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b'
+  # IPv4 in RFC1918 private ranges (home/lan addresses)
+  '\b(192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})\b'
+  # Unix home-directory paths — exposes username
+  '/home/[a-z][a-z0-9_-]*/'
+  '/Users/[A-Za-z][A-Za-z0-9_-]*/'
+  # 15-digit IMEI (very loose; will hit some unrelated 15-digit sequences)
+  '\bIMEI[: ]*[0-9]{15}\b'
+  # ADB-listing-style device serial (uppercase alphanumeric token 8-16 chars
+  # immediately followed by "device" on the same line)
+  '^[A-Z0-9]{8,16}[[:space:]]+device([[:space:]]|$)'
+  # "Samsung/Pixel/Galaxy/Google" followed by an uppercase token that looks
+  # like a serial — catches the prior android-reader leak pattern.
+  '(Samsung|Galaxy|Pixel|Google)[[:space:]]+[A-Z][A-Z0-9]{6,}\b'
+
+  # ===== API keys / tokens (high-value, low false-positive) =====
+  # GitHub personal access tokens — classic + fine-grained
+  '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})'
+  # AWS access key ID
+  '\bAKIA[0-9A-Z]{16}\b'
+  # Anthropic API key
+  'sk-ant-[A-Za-z0-9_-]{32,}'
+  # OpenAI API key
+  'sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}'
+  # Slack bot / app / user / webhook tokens
+  'xox[baprs]-[0-9A-Za-z-]{10,}'
+  # Stripe live secret keys
+  'sk_live_[A-Za-z0-9]{24,}'
+  # JSON Web Token (three base64url segments separated by dots)
+  'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
+
+  # ===== Crypto / signing material =====
+  # PEM private key block — any flavor (RSA, EC, generic)
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  # OpenSSH private key (some tools use this exact header instead of PEM)
+  '-----BEGIN OPENSSH PRIVATE KEY-----'
+  # GPG private key block
+  '-----BEGIN PGP PRIVATE KEY BLOCK-----'
+
+  # ===== Personal identifiers =====
+  # US Social Security Number (xxx-xx-xxxx); low FP, high blast radius if leaked
+  '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b'
+)
+
+repo_root="$(git rev-parse --show-toplevel)"
+extra_patterns_file="$repo_root/.privacy-patterns"
+
+# Load user-supplied patterns (per-clone, gitignored).
+EXTRA_PATTERNS=()
+if [ -f "$extra_patterns_file" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      *) EXTRA_PATTERNS+=("$line") ;;
+    esac
+  done < "$extra_patterns_file"
+fi
+
+ALL_PATTERNS=("${BUILTIN_PATTERNS[@]}" "${EXTRA_PATTERNS[@]}")
+
+# Only inspect ADDED lines in the staged diff (lines that begin with `+`
+# but not `+++` file headers). This way removing a sensitive value never
+# blocks the commit that removes it.
+#
+# Exclude the hook + audit-script themselves: their source contains the
+# regex pattern definitions (e.g. `-----BEGIN ... PRIVATE KEY-----`),
+# which would self-match. Code review is the right safety mechanism for
+# changes to these files, not the hook itself.
+#
+# templates/* paths are the canonical-source layout used by the
+# privacy-guard repo at <privacy-guard>/. In any normal
+# consuming project there is no templates/ directory, so these are
+# inert; in the guard repo itself they prevent self-match on the same
+# pattern definitions that live there.
+staged_added="$(git diff --cached --unified=0 -- \
+    ':(exclude)scripts/hooks/*' \
+    ':(exclude)scripts/audit-privacy.sh' \
+    ':(exclude)templates/pre-commit' \
+    ':(exclude)templates/audit-privacy.sh' \
+    ':(exclude)templates/gitleaks.toml' \
+    ':(exclude)templates/privacy-patterns.example' \
+  | grep -E '^\+[^+]' || true)"
+
+if [ -z "$staged_added" ]; then
+  exit 0
+fi
+
+violations=""
+for pat in "${ALL_PATTERNS[@]}"; do
+  matches="$(printf '%s\n' "$staged_added" | grep -Ein -- "$pat" || true)"
+  if [ -n "$matches" ]; then
+    violations="${violations}${RED}Pattern matched:${RESET} ${YELLOW}${pat}${RESET}
+$matches
+"
+  fi
+done
+
+if [ -n "$violations" ]; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: staged content matches sensitive patterns ---${RESET}"
+  printf '%s\n' "$violations"
+  printf '%s\n' "${YELLOW}If a match is a false positive, you can bypass once with:${RESET}"
+  printf '%s\n' "  git commit --no-verify"
+  printf '%s\n' "${YELLOW}If a match is real, edit the staged file to remove the identifier, then re-stage and re-commit.${RESET}"
+  exit 1
+fi
+
+# ----------------------------------------------------------------------------
+# Layer 2: gitleaks. The bash patterns above cover workspace-specific things
+# gitleaks doesn't know about (device serials, /home/<user>/ paths, RFC1918
+# IPs). gitleaks adds ~150 cloud-provider patterns + entropy detection on top.
+#
+# Required, not optional. Per the workspace policy, we want the broader net.
+# If gitleaks is missing, fail clearly rather than silently letting commits
+# through with weaker coverage.
+# ----------------------------------------------------------------------------
+if ! command -v gitleaks >/dev/null 2>&1; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks not installed ---${RESET}"
+  printf '%s\n' "${YELLOW}gitleaks is required by this repo's privacy guard. Install it once:${RESET}"
+  printf '%s\n' ""
+  printf '%s\n' "  CachyOS / Arch (recommended):  paru -S gitleaks"
+  printf '%s\n' "                                 sudo pacman -S gitleaks  # if you don't use paru"
+  printf '%s\n' "  Mint / Debian / Ubuntu:        download the latest gitleaks_*_linux_x64.tar.gz from"
+  printf '%s\n' "                                 https://github.com/gitleaks/gitleaks/releases and"
+  printf '%s\n' "                                 install the 'gitleaks' binary on PATH."
+  printf '%s\n' "  go-installed:                  go install github.com/gitleaks/gitleaks/v8@latest"
+  printf '%s\n' ""
+  printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
+  exit 1
+fi
+
+# `protect --staged` scans the staged index, not the working tree. --redact
+# replaces the secret value in the report with [REDACTED] so the secret itself
+# is never written to terminal scrollback. --no-banner suppresses the ASCII
+# logo on every run.
+if ! gitleaks protect --staged --redact --no-banner --config="$repo_root/.gitleaks.toml" 2>&1; then
+  printf '%s\n' ""
+  printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks found one or more secrets ---${RESET}"
+  printf '%s\n' "${YELLOW}If a match is a real secret:${RESET}  remove it from the staged file, re-stage, re-commit."
+  printf '%s\n' "${YELLOW}If a match is a false positive:${RESET} add it to the [allowlist] in .gitleaks.toml"
+  printf '%s\n' "${YELLOW}                                ${RESET}(see comments in that file for the regex/path format)."
+  printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
+  exit 1
+fi
+
+exit 0
