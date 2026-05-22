@@ -1,0 +1,17 @@
+# Per-developer private-pattern list. Copy to `.privacy-patterns`
+# (gitignored), then add regexes — one per line — that scripts/hooks/pre-commit
+# should block in addition to its built-in patterns.
+#
+# Lines starting with `#` are comments. Blank lines ignored.
+# Patterns are extended regular expressions (grep -E).
+#
+# Common additions:
+#   - Your hardware serials (run `adb devices` once and copy the value)
+#   - Your internal hostnames / static LAN IPs
+#   - Your real name if it should never appear in commits (e.g., ABC123XYZ)
+#   - Anything from a previous leak you scrubbed via filter-repo
+#
+# Example entries (commented out — uncomment + edit for your setup):
+# ABC123XYZ
+# my-laptop\.local
+# user@example\.com

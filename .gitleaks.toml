@@ -1,0 +1,48 @@
+# gitleaks configuration — canonical template from <privacy-guard>/.
+#
+# Extends the default ruleset that ships with gitleaks (8.x). Project-specific
+# customization lives below.
+#
+# Docs: https://github.com/gitleaks/gitleaks/blob/master/README.md#configuration
+#
+# Order of operations:
+#   1) scripts/hooks/pre-commit runs the bash pattern guard (workspace-specific
+#      patterns like /home/<user>/ paths, device serials, RFC1918 IPs).
+#   2) Then it invokes `gitleaks protect --staged --config .gitleaks.toml`.
+#      gitleaks scans staged content against its default cloud/provider rules
+#      plus this file's [allowlist].
+#
+# If gitleaks flags a real secret: remove it from the staged file.
+# If it flags a false positive: add the path or regex to [allowlist] below.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "workspace allowlist — scanner scripts and pattern-format examples"
+
+# The pre-commit hook + audit-privacy.sh CONTAIN the regex patterns by
+# necessity. Without this exclusion gitleaks would flag the regex strings as
+# matches against themselves. Code review is the right control for changes to
+# these files, not the secret scanner.
+paths = [
+  '''^scripts/hooks/pre-commit$''',
+  '''^scripts/audit-privacy\.sh$''',
+  '''^\.privacy-patterns\.example$''',
+  '''^\.gitleaks\.toml$''',
+  # privacy-guard canonical sources — inert in normal projects (no templates/
+  # dir), used by <privacy-guard>/ itself to self-host without
+  # self-matching its own canonical pattern definitions.
+  '''^templates/pre-commit$''',
+  '''^templates/audit-privacy\.sh$''',
+  '''^templates/gitleaks\.toml$''',
+  '''^templates/privacy-patterns\.example$''',
+]
+
+# To allow a literal known-safe value (e.g., a documentation example token),
+# uncomment and add an entry under regexes below. Format is one regex per
+# string entry; partial matches are fine.
+#
+# regexes = [
+#   '''<your-example-token-regex-here>''',
+# ]

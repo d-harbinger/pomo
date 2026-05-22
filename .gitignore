@@ -6,3 +6,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# privacy-guard: per-clone patterns file (gitignored; see .privacy-patterns.example)
+.privacy-patterns
+# privacy-guard: privacy-related script log output (audit, host gates, etc.)
+.gsd-logs/
+# privacy-guard: track .claude/settings.json (project hook config), ignore the rest
+.claude/*
+!.claude/settings.json

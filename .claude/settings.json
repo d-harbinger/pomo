@@ -1,0 +1,16 @@
+{
+  "$comment": "Project-level Claude Code config. Privacy guard hook lives here so any clone of this repo gets identifier-leak protection on first session — sibling to scripts/hooks/pre-commit (git-side) and scripts/audit-privacy.sh (history-side).",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash $CLAUDE_PROJECT_DIR/scripts/claude-probe-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
