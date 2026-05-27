@@ -110,13 +110,35 @@ ALL_PATTERNS=("${BUILTIN_PATTERNS[@]}" "${EXTRA_PATTERNS[@]}")
 # consuming project there is no templates/ directory, so these are
 # inert; in the guard repo itself they prevent self-match on the same
 # pattern definitions that live there.
-staged_added="$(git diff --cached --unified=0 -- \
-    ':(exclude)scripts/hooks/*' \
-    ':(exclude)scripts/audit-privacy.sh' \
-    ':(exclude)templates/pre-commit' \
-    ':(exclude)templates/audit-privacy.sh' \
-    ':(exclude)templates/gitleaks.toml' \
-    ':(exclude)templates/privacy-patterns.example' \
+EXCLUDE_PATHS=(
+  ':(exclude)scripts/hooks/*'
+  ':(exclude)scripts/audit-privacy.sh'
+  ':(exclude).privacy-allow'
+  ':(exclude).privacy-allow.example'
+  ':(exclude)templates/pre-commit'
+  ':(exclude)templates/audit-privacy.sh'
+  ':(exclude)templates/gitleaks.toml'
+  ':(exclude)templates/privacy-patterns.example'
+)
+
+# Demo / synthetic data declared in .privacy-allow (committed, one path-glob
+# per line). Realistic fixtures (sample LAN IPs, demo MACs, seed CSVs) are
+# indistinguishable from a real leak to a regex, so the repo declares them
+# once and the guard trusts the declaration. Same file the audit reads; see
+# scripts/audit-privacy.sh for the full rationale. Globs use :(glob) magic —
+# write the `**` explicitly (e.g. public/samples/**).
+allow_file="$repo_root/.privacy-allow"
+if [ -f "$allow_file" ]; then
+  while IFS= read -r raw; do
+    line="${raw%%#*}"                          # strip inline comment
+    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+    line="${line%"${line##*[![:space:]]}"}"    # rtrim
+    [ -z "$line" ] && continue
+    EXCLUDE_PATHS+=(":(exclude,glob)$line")
+  done < "$allow_file"
+fi
+
+staged_added="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" \
   | grep -E '^\+[^+]' || true)"
 
 if [ -z "$staged_added" ]; then

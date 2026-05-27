@@ -1,0 +1,27 @@
+# .privacy-allow — declare intentionally-synthetic data so the guard stops
+# flagging it. COMMIT this file (unlike .privacy-patterns, which is per-clone
+# and gitignored). Demo-data location is a property of the repo, the same for
+# every clone, so it's versioned with the repo and reviewable in a diff.
+#
+# Why this exists: realistic demo data is realistic ON PURPOSE — a sample LAN
+# IP, a fake MAC, a seed CSV of asset serials. A regex cannot tell those from
+# a real leak, and good fixtures will always look like the thing they imitate.
+# So the tool does not guess; the repo declares. Burden moves from "the
+# scanner infers intent" (impossible) to "you mark the path once" (trivial).
+#
+# Format: one git path-glob per line. `#` comments and blank lines ignored.
+# Globs use git's :(glob) magic — write the `**` explicitly:
+#
+#   public/samples/**          # whole directory subtree
+#   src/lib/seed/**
+#   prisma/seed.ts             # a single file
+#   tests/fixtures/**
+#   **/*.demo.csv              # by extension, anywhere in the tree
+#
+# Scope tightly. Excluding `tests/**` wholesale also blinds the guard to a
+# real secret accidentally pasted into a test — prefer the narrowest path that
+# covers the fixture (e.g. tests/fixtures/** over tests/**).
+#
+# This file feeds the BASH pattern layer (RFC1918 IPs, MACs, /home/<user>/
+# paths — the workspace-specific patterns). For a match found by GITLEAKS
+# inside demo data instead, add the path to [allowlist].paths in .gitleaks.toml.

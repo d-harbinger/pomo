@@ -78,12 +78,35 @@ EXCLUDE_PATHS=(
   ':(exclude)scripts/hooks/*'
   ':(exclude)scripts/audit-privacy.sh'
   ':(exclude).privacy-patterns.example'
+  ':(exclude).privacy-allow'
+  ':(exclude).privacy-allow.example'
   ':(exclude).gitleaks.toml'
   ':(exclude)templates/pre-commit'
   ':(exclude)templates/audit-privacy.sh'
   ':(exclude)templates/gitleaks.toml'
   ':(exclude)templates/privacy-patterns.example'
 )
+
+# Demo / synthetic data declared in .privacy-allow (committed, one path-glob
+# per line; `#` comments and blank lines ignored). Realistic fixtures —
+# sample LAN IPs, demo MACs, seed CSVs — are indistinguishable from a real
+# leak to a regex, so the repo declares them once here and the scanner trusts
+# the declaration. Unlike .privacy-patterns (per-clone, gitignored, ADDS
+# patterns) this is a property of the repo and is committed so every clone
+# agrees on what's intentional. Globs use git's :(glob) magic, so write the
+# `**` explicitly: `public/samples/**`, `tests/fixtures/**`, `**/*.seed.ts`.
+# This covers the bash pattern layer; for a gitleaks-detected match inside
+# demo data, add the path to [allowlist].paths in .gitleaks.toml instead.
+allow_file="$repo_root/.privacy-allow"
+if [ -f "$allow_file" ]; then
+  while IFS= read -r raw; do
+    line="${raw%%#*}"                          # strip inline comment
+    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+    line="${line%"${line##*[![:space:]]}"}"    # rtrim
+    [ -z "$line" ] && continue
+    EXCLUDE_PATHS+=(":(exclude,glob)$line")
+  done < "$allow_file"
+fi
 
 hits=0
 for pat in "${ALL_PATTERNS[@]}"; do
