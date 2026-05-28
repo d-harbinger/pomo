@@ -861,7 +861,11 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        self.chain_box = QCheckBox("Auto-start next session after a break")
+        self.breaks_box = QCheckBox("Auto-start breaks after focus")
+        self.breaks_box.setChecked(app.auto_start_breaks)
+        layout.addWidget(self.breaks_box)
+
+        self.chain_box = QCheckBox("Auto-start next focus after a break")
         self.chain_box.setChecked(app.chain_auto_start)
         layout.addWidget(self.chain_box)
 
@@ -909,6 +913,7 @@ class PomoWindow(QMainWindow):
         if self.theme_name not in THEMES:
             self.theme_name = "midnight"
         self.chain_auto_start = bool(prefs.get("chain_auto_start", False))
+        self.auto_start_breaks = bool(prefs.get("auto_start_breaks", True))
         self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
         self.notifications_enabled = bool(prefs.get("notifications_enabled", True))
 
@@ -976,6 +981,7 @@ class PomoWindow(QMainWindow):
         prefs.update({
             "theme": self.theme_name,
             "chain_auto_start": self.chain_auto_start,
+            "auto_start_breaks": self.auto_start_breaks,
             "sounds_enabled": self.sounds_enabled,
             "notifications_enabled": self.notifications_enabled,
             "dur_work": self.durations["work"],
@@ -1164,6 +1170,7 @@ class PomoWindow(QMainWindow):
             self.pattern_counts["focus"] = dlg.f_spin.value()
             self.pattern_counts["short"] = dlg.s_spin.value()
             self.pattern_counts["long"] = dlg.l_spin.value()
+            self.auto_start_breaks = dlg.breaks_box.isChecked()
             self.chain_auto_start = dlg.chain_box.isChecked()
             self.sounds_enabled = dlg.sounds_box.isChecked()
             self.notifications_enabled = dlg.notif_box.isChecked()
@@ -1312,7 +1319,6 @@ class PomoWindow(QMainWindow):
         if not self.sessions:
             self.current_index = -1
         elif idx <= self.current_index:
-            self.current_index = max(0, self.current_index - 1)
             self.current_index = self._first_pending_index()
         self._save_sessions()
         self._refresh_all()
@@ -1359,7 +1365,7 @@ class PomoWindow(QMainWindow):
 
     def skip_session(self):
         self._tick.stop()
-        self._session_complete()
+        self._session_complete(completed=False)
 
     def _on_tick(self):
         if self.timer_state != TimerState.RUNNING:
@@ -1372,19 +1378,21 @@ class PomoWindow(QMainWindow):
             return
         self._refresh_display()
 
-    def _session_complete(self):
+    def _session_complete(self, completed=True):
+        # completed=False means the user skipped: advance past the session
+        # but don't record it as work done, and don't chime/notify/auto-start.
         self.timer_state = TimerState.IDLE
         completed_type = None
         if 0 <= self.current_index < len(self.sessions):
             cur = self.sessions[self.current_index]
             cur.done = True
             completed_type = cur.type
-            if completed_type == "work":
+            if completed and completed_type == "work":
                 self.stats.record_session(cur.duration, cur.name)
                 notify("Pomo", f"Done: {cur.name}",
                        enabled=self.notifications_enabled)
                 self.sounds.play("work", enabled=self.sounds_enabled)
-            else:
+            elif completed:
                 notify("Pomo", "Break's over — time to focus!",
                        enabled=self.notifications_enabled)
                 self.sounds.play("break", enabled=self.sounds_enabled)
@@ -1398,9 +1406,14 @@ class PomoWindow(QMainWindow):
         self.remaining_seconds = self._current_session_seconds()
         self.total_seconds = self.remaining_seconds
 
-        auto = (completed_type == "work" or
-                (completed_type in ("short_break", "long_break")
-                 and self.chain_auto_start))
+        if not completed:
+            auto = False
+        elif completed_type == "work":
+            auto = self.auto_start_breaks
+        elif completed_type in ("short_break", "long_break"):
+            auto = self.chain_auto_start
+        else:
+            auto = False
         self._save_sessions()
         self._refresh_all()
         if auto and next_idx >= 0:

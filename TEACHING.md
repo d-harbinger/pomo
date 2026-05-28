@@ -87,7 +87,7 @@ product judgment, left to you.
 
 - `pomo.py` (Tk, 2507 LOC) → `/mnt/Projects/_archive/pomo/` with a provenance README.
 - `run.sh`: launches `pomo_qt.py`.
-- `install-desktop.sh`: dropped the `qt|tk` switch; hardcoded `pomo_qt.py`; trimmed a stale Tk-transition comment.
+- `install-desktop.sh` → renamed `install.sh`: dropped the `qt|tk` switch; hardcoded `pomo_qt.py`; trimmed a stale Tk-transition comment.
 - `requirements.txt`: removed `customtkinter` + `plyer` and the "keep alongside" comment.
 - `pomo_qt.py`: both `except Exception: pass` → `except OSError:` with one-line reasons.
 - **Verified:** `bash -n` on both scripts, `py_compile pomo_qt.py`, no dangling `pomo.py` refs. **Not verified:** GUI launch (display-less VM) — confirm host-side before shipping.
@@ -100,3 +100,37 @@ product judgment, left to you.
 No "fixed/working" claim until `pomo` launches host-side (GUI; not runnable in the
 audit VM) and the surviving features are exercised. Lint/import-check is necessary but
 not sufficient.
+
+---
+
+## Qt structural & functional review — 2026-05-28
+
+Now that Qt is canonical, `pomo_qt.py` (1790 LOC) got its own structure + function pass.
+
+**Structure: good.** 12 classes; widgets (`RingTimer`, `SessionRow`), dialogs
+(`AddSessionPopup`, `PatternPopup`, `SettingsDialog`, `TemplatesDialog`) and `Sounds`/
+`Stats` are all properly separated. No ytdlp-style god-class. The one large class is
+**`PomoWindow`** (~694 LOC, 47 methods) — it owns persistence + the timer state machine
++ the session-stack model + display refresh + theming. *Optional* future polish: extract
+a `SessionStack` model (the `sessions` list + add/remove/reorder/persist + `current_index`)
+out of the window. Not urgent — the class is readable and well-named. **Don't refactor
+without a reason** (our own rule); flag, don't force.
+
+**Function: mostly correct, with behaviors to confirm.**
+
+- **F1 — skip counts as completion *(likely a real bug)*.** `skip_session` (1360) calls `_session_complete`, which for a work session calls `stats.record_session(...)` and notifies `"Done: {name}"` (1383). So **skipping a focus inflates your stats/history as if you'd done the work**, and pops a "Done" toast. Skipping should advance *without* recording. Confirm intent — if I'm right, the fix is to pass a `completed=False` flag (or split skip from complete) so stats only record genuine completions.
+- **F2 — auto-start asymmetry *(design question)*.** After a *work* session, the next session (a break) **always** auto-starts; after a *break*, the next only auto-starts if `chain_auto_start` is on (1401–1403). Coherent ("breaks begin automatically, you consciously start each focus") — but is auto-starting the break even when auto-chain is *off* what you want?
+- **F3 — dead line in `_remove` *(minor)*.** `pomo_qt.py:1315` sets `current_index = max(0, current_index - 1)` and line 1316 immediately overwrites it with `_first_pending_index()`. Line 1315 is dead — delete it. Safe, trivial.
+- **F4 — `done` state not persisted *(note)*.** `_save_sessions`/`_load_sessions` drop per-session `done`, so a relaunch reloads the whole stack as pending. Fine for a pomodoro, but confirm you don't want mid-stack resume across restarts.
+
+**Clean / correct:** timer pause/resume/reset, `_load_sessions` type validation, `_current_session_seconds` fallback, the `push_pattern` interleave.
+
+**Resolved — 2026-05-28:**
+
+- **F1 — fixed.** `_session_complete(completed=True)`; `skip_session` now calls it with `completed=False`, so a skipped session advances without recording stats, chiming, notifying, or auto-starting. Only genuine timer completions count.
+- **F2 — improved into an explicit option.** The hardcoded asymmetry is gone. Two labeled toggles in Settings: **"Auto-start breaks after focus"** (`auto_start_breaks`, default on) and **"Auto-start next focus after a break"** (`chain_auto_start`, default off). Defaults preserve prior behavior, so the 45-10-20 template flow is unchanged — but it's now intentional, not jerry-rigged.
+- **F3 — fixed.** Dead line removed from `_remove`.
+- **F4 — confirmed intended** (stack reloads pending on relaunch). Left as-is.
+- **`SessionStack` extraction — deferred.** Noted seam; not worth the churn now.
+
+Verified: `py_compile` passes. **Not verified:** GUI behavior — confirm host-side that skip no longer logs a session and that the two toggles do what their labels say.
