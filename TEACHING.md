@@ -134,3 +134,24 @@ without a reason** (our own rule); flag, don't force.
 - **`SessionStack` extraction — deferred.** Noted seam; not worth the churn now.
 
 Verified: `py_compile` passes. **Not verified:** GUI behavior — confirm host-side that skip no longer logs a session and that the two toggles do what their labels say.
+
+---
+
+## Cross-distro font scaling — 2026-05-28
+
+**Problem:** fonts rendered hugely different sizes across machines (CachyOS/Mint/Ubuntu/Arch, Plasma vs Cinnamon vs GNOME, X11 vs Wayland). Cause: every size was authored in **points**, and Qt converts `pt → px` using each desktop's **logical DPI** — which every DE/display-server reports differently. Qt6's "automatic HiDPI" only normalizes *device-pixel-ratio* (crispness), not logical DPI, so the comment in `main()` ("no setup needed") was misleading. The ring timer had a twist: a pixel-derived `time_size` was passed as a *point* size.
+
+**Fix (A — normalize to logical pixels):**
+- Added `fs(points)` / `set_ui_scale()` helpers. Sizes stay authored as points at a 96-DPI baseline and are emitted as **logical px** (`pt × 4/3 × ui_scale`). Logical px is DE-independent; Qt's HiDPI handling keeps it crisp on HiDPI screens. This is the opposite of auto-scaling by logical DPI, which would *re-create* the variance.
+- Converted all ~25 `font-size: Npt` (central stylesheet + inline label/button styles) to `fs(N)`.
+- Ring timer now uses `QFont.setPixelSize(time_size)` (was point size) — stays window-proportional, no longer DPI-dependent. Not multiplied by `ui_scale` (already scales with the window).
+
+**Fix (C — per-machine override):**
+- `ui_scale` pref (default 1.0), loaded in `__init__`, persisted in `prefs.json`. Since `prefs.json` lives in each machine's `~/.local/share/pomo`, the scale is naturally per-PC.
+- New Settings control: **"UI scale"** spinbox (50–300%). Changing it re-applies the stylesheet live.
+
+**Scope:** only *fonts* scale with `ui_scale`; paddings/borders/checkbox-indicator stay fixed logical px — sufficient for the reported problem, and avoids a much larger unverifiable change.
+
+**Verified headless (offscreen PySide6, 9/9):** `fs()` math + clamp, stylesheet emits px and scales, widgets build at a non-default scale, spinner reflects + round-trips `ui_scale`. **Not verified — and only the user can:** how it actually *looks* on each of the four distros. Workflow: launch per machine, set `ui_scale` once in Settings; it persists there.
+
+**Header responsiveness + retro pills:** the larger px fonts made the header toolbar clip in narrow/cornered windows. Fixes: removed the decorative "SESSIONS" label; added a `ui_scale`-aware minimum window size (560×300 @100%) so the header can't be squeezed until it clips; restyled the `#chip` buttons as hard-edge HUD pills (0px corners, 1px border, accent-on-hover, UPPERCASE) — first step toward an 8-bit/Mega-Man revision. Baseline scaling confirmed on host by the user; pill restyle + min-size not yet visually confirmed.
