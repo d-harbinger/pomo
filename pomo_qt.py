@@ -1093,25 +1093,25 @@ class PomoWindow(QMainWindow):
         v.setSpacing(6)
 
         head = QHBoxLayout()
-        head.setSpacing(4)
+        head.setSpacing(0)
 
         restart = QPushButton("RESTART"); restart.setObjectName("chip")
         restart.clicked.connect(self.restart_stack)
-        head.addWidget(restart)
         clear = QPushButton("CLEAR"); clear.setObjectName("chip")
         clear.clicked.connect(self.clear_stack)
-        head.addWidget(clear)
-        head.addStretch()
-
         templates = QPushButton("TEMPLATES"); templates.setObjectName("chip")
         templates.clicked.connect(self.open_templates)
-        head.addWidget(templates)
-
         push_pat = QPushButton("PATTERN"); push_pat.setObjectName("chip")
         push_pat.setToolTip("Edit F/S/L counts and push")
         push_pat.clicked.connect(
             lambda: self._open_pattern_popup(push_pat))
-        head.addWidget(push_pat)
+
+        # Spread the four controls evenly across the bar: a stretch between
+        # each (flush to both edges, equal gaps) rather than two clusters.
+        for i, btn in enumerate((restart, clear, templates, push_pat)):
+            if i:
+                head.addStretch()
+            head.addWidget(btn)
         v.addLayout(head)
 
         total = QLabel(""); total.setObjectName("muted")
