@@ -400,7 +400,7 @@ def notify(title: str, message: str, enabled: bool = True):
             pass  # notification is best-effort
 
 
-# ── Stats (extracted) ────────────────────────────────────────────────────────
+# ── Stats ────────────────────────────────────────────────────────
 
 class Stats:
     def __init__(self):
