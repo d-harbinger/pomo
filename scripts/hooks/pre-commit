@@ -138,8 +138,10 @@ if [ -f "$allow_file" ]; then
   done < "$allow_file"
 fi
 
+# Strip the leading '+' from each added line BEFORE matching, so ^-anchored
+# patterns (e.g. the ADB device-serial) match real content, not the diff prefix.
 staged_added="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" \
-  | grep -E '^\+[^+]' || true)"
+  | grep -E '^\+[^+]' | sed 's/^+//' || true)"
 
 if [ -z "$staged_added" ]; then
   exit 0

@@ -29,6 +29,9 @@ BUILTIN_PATTERNS=(
   '/home/[a-z][a-z0-9_-]*/'
   '/Users/[A-Za-z][A-Za-z0-9_-]*/'
   '\bIMEI[: ]*[0-9]{15}\b'
+  # ADB-listing-style device serial (token 8-16 chars then "device"). Scanned
+  # against file content here (no diff prefix), so the ^ anchor is correct.
+  '^[A-Z0-9]{8,16}[[:space:]]+device([[:space:]]|$)'
   '(Samsung|Galaxy|Pixel|Google)[[:space:]]+[A-Z][A-Z0-9]{6,}\b'
   # API keys / tokens
   '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})'
@@ -95,8 +98,9 @@ EXCLUDE_PATHS=(
 # patterns) this is a property of the repo and is committed so every clone
 # agrees on what's intentional. Globs use git's :(glob) magic, so write the
 # `**` explicitly: `public/samples/**`, `tests/fixtures/**`, `**/*.seed.ts`.
-# This covers the bash pattern layer; for a gitleaks-detected match inside
-# demo data, add the path to [allowlist].paths in .gitleaks.toml instead.
+# Both scans below feed off EXCLUDE_PATHS, so these declarations are honored
+# in the current tree and in history alike. For a gitleaks-detected match
+# inside demo data, add the path to [allowlist].paths in .gitleaks.toml.
 allow_file="$repo_root/.privacy-allow"
 if [ -f "$allow_file" ]; then
   while IFS= read -r raw; do
@@ -110,15 +114,35 @@ fi
 
 hits=0
 for pat in "${ALL_PATTERNS[@]}"; do
+  # Step 1: check the current tree. Findings here have a different fix path
+  # (edit the file + commit) than history-only findings. git grep scans only
+  # TRACKED files (so vendored trees like node_modules are skipped) and honors
+  # the same EXCLUDE_PATHS pathspecs as the history scan below — including
+  # whatever .privacy-allow declared.
+  current_matches="$(git grep -nE -e "$pat" -- "${EXCLUDE_PATHS[@]}" 2>/dev/null || true)"
+
+  # Step 2: scan history.
   if [ -n "$range" ]; then
-    matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" || true)"
+    history_matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" || true)"
   else
-    matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" || true)"
+    history_matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" || true)"
   fi
-  if [ -n "$matches" ]; then
+
+  if [ -n "$current_matches" ] || [ -n "$history_matches" ]; then
     echo ""
     echo "${RED}Pattern: ${pat}${RESET}"
-    printf '%s\n' "$matches" | head -20
+    if [ -n "$current_matches" ]; then
+      echo "${YELLOW}  in current source (fix: edit the file + commit):${RESET}"
+      printf '%s\n' "$current_matches" | head -10 | sed 's/^/    /'
+    fi
+    if [ -n "$history_matches" ]; then
+      if [ -n "$current_matches" ]; then
+        echo "${YELLOW}  also in history:${RESET}"
+      else
+        echo "${YELLOW}  in history only (fix: git filter-branch + force-push):${RESET}"
+      fi
+      printf '%s\n' "$history_matches" | head -10 | sed 's/^/    /'
+    fi
     hits=$((hits + 1))
   fi
 done
