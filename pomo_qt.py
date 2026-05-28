@@ -363,8 +363,8 @@ class Sounds:
             subprocess.Popen(
                 [_SOUND_PLAYER, str(path)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        except OSError:
+            pass  # chime is best-effort; a missing player must not break the timer
 
 
 # ── Notifications ────────────────────────────────────────────────────────────
@@ -377,8 +377,8 @@ def notify(title: str, message: str, enabled: bool = True):
             subprocess.Popen(
                 ["notify-send", "-a", "Pomo", "-t", "6000", title, message],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        except OSError:
+            pass  # notification is best-effort
 
 
 # ── Stats (extracted) ────────────────────────────────────────────────────────

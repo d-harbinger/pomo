@@ -6,13 +6,7 @@ APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 DESKTOP_FILE="$HOME/.local/share/applications/pomo.desktop"
 ICON_DIR="$HOME/.local/share/icons/hicolor/256x256/apps"
 
-# Default to the Qt port; pass `tk` to install the legacy Tk version.
-ENTRY="${1:-qt}"
-case "$ENTRY" in
-    qt) SCRIPT="pomo_qt.py" ;;
-    tk) SCRIPT="pomo.py" ;;
-    *) echo "Usage: $0 [qt|tk]" >&2; exit 1 ;;
-esac
+SCRIPT="pomo_qt.py"
 
 # Pick a venv. The per-host pattern is the default so a shared project
 # folder mounted across machines keeps separate venvs (their internal
@@ -43,8 +37,7 @@ if ! venv_works "$VENV"; then
     fi
     python3 -m venv "$VENV"
 fi
-# Always sync deps — pip skips already-installed packages, and this
-# pulls in PySide6 when transitioning from a Tk-only setup.
+# Always sync deps — pip skips already-installed packages.
 echo "Syncing dependencies in $VENV..."
 "$VENV/bin/pip" install -q -r "$APP_DIR/requirements.txt"
 
