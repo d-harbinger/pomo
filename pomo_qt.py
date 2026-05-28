@@ -129,6 +129,23 @@ THEMES = {
 }
 
 
+UI_SCALE = 1.0
+
+
+def set_ui_scale(scale: float):
+    """Set the per-machine UI multiplier (clamped to a sane range)."""
+    global UI_SCALE
+    UI_SCALE = max(0.5, min(3.0, float(scale)))
+
+
+def fs(points: float) -> str:
+    # Sizes are authored as points at a 96-DPI baseline and emitted as logical
+    # pixels, so the UI renders at a consistent size regardless of the DPI each
+    # desktop reports (the cause of the cross-distro big/small fonts). Qt's
+    # high-DPI handling keeps it crisp on HiDPI screens; UI_SCALE is the user knob.
+    return f"{max(1, round(points * 4 / 3 * UI_SCALE))}px"
+
+
 def stylesheet(theme: dict) -> str:
     """Translate the theme dict into a Qt stylesheet.
 
@@ -141,7 +158,7 @@ def stylesheet(theme: dict) -> str:
         color: {t['text']};
         font-family: "Inter", "Cantarell", "Ubuntu", "Noto Sans",
                      "Liberation Sans", "Segoe UI", system-ui, sans-serif;
-        font-size: 10pt;
+        font-size: {fs(10)};
     }}
     QFrame#card, QFrame#bar {{
         background-color: {t['surface']};
@@ -158,14 +175,14 @@ def stylesheet(theme: dict) -> str:
         border: none;
         border-radius: 3px;
         padding: 4px 10px;
-        font-size: 10pt;
+        font-size: {fs(10)};
     }}
     QPushButton:hover {{ color: {t['text']}; background-color: {t['surface']}; }}
     /* Primary action: outline + accent color, bigger glyph for icon mode. */
     QPushButton#primary {{
         background: transparent;
         color: {t['work']};
-        font-size: 14pt;
+        font-size: {fs(14)};
         padding: 0px;
         border: 1px solid {t['work']};
         border-radius: 3px;
@@ -175,7 +192,7 @@ def stylesheet(theme: dict) -> str:
     }}
     QPushButton#breakPrimary {{
         background: transparent; color: {t['break']};
-        font-size: 14pt; padding: 0px;
+        font-size: {fs(14)}; padding: 0px;
         border: 1px solid {t['break']}; border-radius: 3px;
     }}
     QPushButton#breakPrimary:hover {{
@@ -183,7 +200,7 @@ def stylesheet(theme: dict) -> str:
     }}
     QPushButton#longPrimary {{
         background: transparent; color: {t['long_break']};
-        font-size: 14pt; padding: 0px;
+        font-size: {fs(14)}; padding: 0px;
         border: 1px solid {t['long_break']}; border-radius: 3px;
     }}
     QPushButton#longPrimary:hover {{
@@ -195,7 +212,7 @@ def stylesheet(theme: dict) -> str:
         color: {t['text_dim']};
         border: none;
         border-radius: 3px;
-        font-size: 13pt;
+        font-size: {fs(13)};
         padding: 0px;
     }}
     QPushButton#iconControl:hover {{
@@ -205,19 +222,21 @@ def stylesheet(theme: dict) -> str:
     QPushButton#chip {{
         background: transparent;
         color: {t['text_muted']};
-        padding: 3px 8px;
-        font-size: 9pt;
-        border-radius: 3px;
+        padding: 4px 11px;
+        font-size: {fs(9)};
+        border: 1px solid {t['surface_light']};
+        border-radius: 0px;
     }}
     QPushButton#chip:hover {{
         color: {t['text']};
+        border-color: {t['work']};
         background-color: {t['surface']};
     }}
     QPushButton#rowChip {{
         background: transparent;
         color: {t['text_muted']};
         padding: 0px;
-        font-size: 11pt;
+        font-size: {fs(11)};
         border-radius: 3px;
     }}
     QPushButton#rowChip:hover {{
@@ -241,7 +260,7 @@ def stylesheet(theme: dict) -> str:
         background: transparent;
     }}
     QPushButton#icon {{
-        background: transparent; padding: 4px; font-size: 12pt;
+        background: transparent; padding: 4px; font-size: {fs(12)};
         color: {t['text_dim']};
         border-radius: 3px;
     }}
@@ -250,11 +269,11 @@ def stylesheet(theme: dict) -> str:
         color: {t['text']};
     }}
     QLabel#title {{
-        font-size: 13pt; font-weight: 600; color: {t['text']};
+        font-size: {fs(13)}; font-weight: 600; color: {t['text']};
         letter-spacing: 0.5px;
     }}
     QLabel#titleDot {{
-        color: {t['work']}; font-size: 14pt; padding-bottom: 2px;
+        color: {t['work']}; font-size: {fs(14)}; padding-bottom: 2px;
     }}
     QFrame#hairline {{
         background-color: {t['surface_light']};
@@ -267,7 +286,7 @@ def stylesheet(theme: dict) -> str:
         border: 1px dashed {t['surface_light']};
         border-radius: 3px;
         padding: 6px 8px;
-        font-size: 10pt;
+        font-size: {fs(10)};
         text-align: left;
     }}
     QPushButton#addRow:hover {{
@@ -275,11 +294,11 @@ def stylesheet(theme: dict) -> str:
         border-color: {t['text_muted']};
         background-color: {t['surface']};
     }}
-    QLabel#muted {{ color: {t['text_muted']}; font-size: 9pt; }}
-    QLabel#dim {{ color: {t['text_dim']}; font-size: 10pt; }}
+    QLabel#muted {{ color: {t['text_muted']}; font-size: {fs(9)}; }}
+    QLabel#dim {{ color: {t['text_dim']}; font-size: {fs(10)}; }}
     QListWidget {{
         background: transparent; border: none; outline: none;
-        font-size: 10pt;
+        font-size: {fs(10)};
     }}
     QLineEdit, QSpinBox, QComboBox {{
         background-color: {t['surface']};
@@ -498,10 +517,11 @@ class RingTimer(QWidget):
         # Time text — scale with the inner diameter so it always fits
         # inside the ring (no min-clamp; ring shrinks freely with window).
         time_size = max(8, int(size * 0.16))
-        f = QFont("JetBrains Mono", time_size)
+        f = QFont("JetBrains Mono")
+        f.setPixelSize(time_size)
         if not f.exactMatch():
             f = QFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
-            f.setPointSize(time_size)
+            f.setPixelSize(time_size)
         f.setBold(True)
         p.setFont(f)
         p.setPen(self._text_color)
@@ -512,7 +532,7 @@ class RingTimer(QWidget):
         if size >= 130:
             label_size = max(7, int(size * 0.052))
             lf = QFont()
-            lf.setPointSize(label_size)
+            lf.setPixelSize(label_size)
             p.setFont(lf)
             p.setPen(self._text_dim)
             label_rect = QRect(
@@ -553,7 +573,7 @@ class SessionRow(QWidget):
         # Drag handle — visible affordance that rows are reorderable.
         handle = QLabel("⠿")
         handle.setStyleSheet(
-            f"color: {muted}; font-size: 12pt; padding: 0 2px;")
+            f"color: {muted}; font-size: {fs(12)}; padding: 0 2px;")
         handle.setFixedWidth(16)
         handle.setAlignment(Qt.AlignCenter)
         handle.setCursor(Qt.SizeAllCursor)
@@ -578,7 +598,7 @@ class SessionRow(QWidget):
                         else muted)
         marker = QLabel(marker_text)
         marker.setStyleSheet(
-            f"color: {marker_color}; font-size: 11pt; "
+            f"color: {marker_color}; font-size: {fs(11)}; "
             "background: transparent;")
         marker.setFixedWidth(12)
         marker.setAlignment(Qt.AlignCenter)
@@ -590,7 +610,7 @@ class SessionRow(QWidget):
                   else "600" if is_current
                   else "500")
         self.name_lbl.setStyleSheet(
-            f"color: {text_color}; font-size: 10pt; "
+            f"color: {text_color}; font-size: {fs(10)}; "
             f"font-weight: {weight}; background: transparent;")
         self.name_lbl.setCursor(Qt.IBeamCursor)
         self.name_lbl.mouseDoubleClickEvent = (
@@ -609,7 +629,7 @@ class SessionRow(QWidget):
                      else muted)
         self.dur_lbl = QLabel(f"{session.duration}m")
         self.dur_lbl.setStyleSheet(
-            f"color: {dur_color}; font-size: 9pt; "
+            f"color: {dur_color}; font-size: {fs(9)}; "
             f"font-weight: {'600' if is_current else 'normal'}; "
             "background: transparent;")
         self.dur_lbl.setMinimumWidth(32)
@@ -702,11 +722,11 @@ class AddSessionPopup(QDialog):
             return (
                 f"background-color: {color}; color: white; "
                 "border-radius: 3px; padding: 4px 10px; "
-                "font-weight: 600; font-size: 9pt;")
+                f"font-weight: 600; font-size: {fs(9)};")
         return (
             f"background: transparent; color: {color}; "
             f"border: 1px solid {color}; border-radius: 3px; "
-            "padding: 4px 10px; font-weight: 500; font-size: 9pt;")
+            f"padding: 4px 10px; font-weight: 500; font-size: {fs(9)};")
 
     def _select_type(self, key: str):
         self._type = key
@@ -769,7 +789,7 @@ class PatternPopup(QDialog):
         ):
             lbl = QLabel(label_text)
             lbl.setStyleSheet(
-                f"color: {color}; font-weight: 700; font-size: 10pt;")
+                f"color: {color}; font-weight: 700; font-size: {fs(10)};")
             h.addWidget(lbl)
             spin = QSpinBox()
             spin.setRange(0, 99)
@@ -859,6 +879,12 @@ class SettingsDialog(QDialog):
         self.l_spin.setValue(app.pattern_counts["long"])
         form.addRow("Pattern · Long count", self.l_spin)
 
+        self.scale_spin = QSpinBox(); self.scale_spin.setRange(50, 300)
+        self.scale_spin.setSingleStep(5)
+        self.scale_spin.setValue(round(app.ui_scale * 100))
+        self.scale_spin.setSuffix(" %")
+        form.addRow("UI scale", self.scale_spin)
+
         layout.addLayout(form)
 
         self.breaks_box = QCheckBox("Auto-start breaks after focus")
@@ -916,6 +942,8 @@ class PomoWindow(QMainWindow):
         self.auto_start_breaks = bool(prefs.get("auto_start_breaks", True))
         self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
         self.notifications_enabled = bool(prefs.get("notifications_enabled", True))
+        self.ui_scale = float(prefs.get("ui_scale", 1.0))
+        set_ui_scale(self.ui_scale)
 
         self.timer_state = TimerState.IDLE
         self.session_type = SessionType.WORK
@@ -930,6 +958,9 @@ class PomoWindow(QMainWindow):
 
         self._build_ui()
         self.set_theme(self.theme_name)
+        # Floor the window so the header row can't shrink until its labels
+        # clip; scales with the UI multiplier.
+        self.setMinimumSize(QSize(round(560 * UI_SCALE), round(300 * UI_SCALE)))
         self.resize(QSize(640, 360))
         self._refresh_all()
         self._bind_shortcuts()
@@ -982,6 +1013,7 @@ class PomoWindow(QMainWindow):
             "theme": self.theme_name,
             "chain_auto_start": self.chain_auto_start,
             "auto_start_breaks": self.auto_start_breaks,
+            "ui_scale": self.ui_scale,
             "sounds_enabled": self.sounds_enabled,
             "notifications_enabled": self.notifications_enabled,
             "dur_work": self.durations["work"],
@@ -1062,25 +1094,20 @@ class PomoWindow(QMainWindow):
 
         head = QHBoxLayout()
         head.setSpacing(4)
-        head_label = QLabel("SESSIONS")
-        head_label.setStyleSheet(
-            "font-size: 9pt; letter-spacing: 1.5px; "
-            f"color: {THEMES[self.theme_name]['text_muted']};")
-        head.addWidget(head_label)
 
-        restart = QPushButton("Restart"); restart.setObjectName("chip")
+        restart = QPushButton("RESTART"); restart.setObjectName("chip")
         restart.clicked.connect(self.restart_stack)
         head.addWidget(restart)
-        clear = QPushButton("Clear"); clear.setObjectName("chip")
+        clear = QPushButton("CLEAR"); clear.setObjectName("chip")
         clear.clicked.connect(self.clear_stack)
         head.addWidget(clear)
         head.addStretch()
 
-        templates = QPushButton("Templates"); templates.setObjectName("chip")
+        templates = QPushButton("TEMPLATES"); templates.setObjectName("chip")
         templates.clicked.connect(self.open_templates)
         head.addWidget(templates)
 
-        push_pat = QPushButton("Pattern"); push_pat.setObjectName("chip")
+        push_pat = QPushButton("PATTERN"); push_pat.setObjectName("chip")
         push_pat.setToolTip("Edit F/S/L counts and push")
         push_pat.clicked.connect(
             lambda: self._open_pattern_popup(push_pat))
@@ -1174,7 +1201,11 @@ class PomoWindow(QMainWindow):
             self.chain_auto_start = dlg.chain_box.isChecked()
             self.sounds_enabled = dlg.sounds_box.isChecked()
             self.notifications_enabled = dlg.notif_box.isChecked()
+            self.ui_scale = dlg.scale_spin.value() / 100.0
+            set_ui_scale(self.ui_scale)
             self._persist_prefs()
+            QApplication.instance().setStyleSheet(
+                stylesheet(THEMES[self.theme_name]))
             if self.timer_state == TimerState.IDLE:
                 self.remaining_seconds = self._current_session_seconds()
                 self.total_seconds = self.remaining_seconds
