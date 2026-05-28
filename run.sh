@@ -13,4 +13,4 @@ else
     source "$VENV/bin/activate"
 fi
 
-python pomo.py "$@"
+python pomo_qt.py "$@"
