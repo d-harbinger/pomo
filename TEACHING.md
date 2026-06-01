@@ -1,7 +1,7 @@
 # TEACHING.md — pomo
 
 Per-project audit of AI-codegen slop, taught with **this repo's own code** as the
-examples, then triaged into a cleanup plan. Part of the `/mnt/Projects` library
+examples, then triaged into a cleanup plan. Part of the `<workspace>` library
 cleanup. Pilot project for the methodology.
 
 Each finding follows: **Tell** (what it looks like) · **Why** (why an AI does it) ·
@@ -30,7 +30,7 @@ moderate on *silent error-swallowing*; **clean** on comment-slop and backwards-c
 - **Tell:** `pomo.py` and `pomo_qt.py` are the *same app* on two GUI toolkits. Both define `Sounds`, `Stats`, `SessionType`, `TimerState`, a ring widget, a session row, a main window. Every feature must be built — and debugged — twice.
 - **Why:** an AI asked to "port to Qt" or "try Qt" produces a *second* file rather than migrating, because creating is safer than deleting. `requirements.txt` then rationalizes it: `# Legacy Tk version (pomo.py) — keep available alongside the Qt port.` "Keep available alongside" is the tell of a decision nobody made.
 - **Detect:** two files implementing the same class names. `grep -l 'class PomoApp\|class PomoWindow' *.py` → both.
-- **Fix:** decide which UI is canonical (the Qt port reads as the intended future; it's also the cleaner of the two — see #5). Archive the loser to `/mnt/Projects/_archive/pomo/` (never `rm`), delete it from the active tree, and findings #2–#4 collapse for free. **This is your call, not mine** — picking a GUI toolkit is a taste/strategy decision.
+- **Fix:** decide which UI is canonical (the Qt port reads as the intended future; it's also the cleaner of the two — see #5). Archive the loser to `<workspace>/_archive/pomo/` (never `rm`), delete it from the active tree, and findings #2–#4 collapse for free. **This is your call, not mine** — picking a GUI toolkit is a taste/strategy decision.
 
 ### 2. Duplicated domain logic across the two files
 
@@ -85,7 +85,7 @@ product judgment, left to you.
 
 ## Cleanup applied — 2026-05-28
 
-- `pomo.py` (Tk, 2507 LOC) → `/mnt/Projects/_archive/pomo/` with a provenance README.
+- `pomo.py` (Tk, 2507 LOC) → `<workspace>/_archive/pomo/` with a provenance README.
 - `run.sh`: launches `pomo_qt.py`.
 - `install-desktop.sh` → renamed `install.sh`: dropped the `qt|tk` switch; hardcoded `pomo_qt.py`; trimmed a stale Tk-transition comment.
 - `requirements.txt`: removed `customtkinter` + `plyer` and the "keep alongside" comment.
@@ -155,3 +155,43 @@ Verified: `py_compile` passes. **Not verified:** GUI behavior — confirm host-s
 **Verified headless (offscreen PySide6, 9/9):** `fs()` math + clamp, stylesheet emits px and scales, widgets build at a non-default scale, spinner reflects + round-trips `ui_scale`. **Not verified — and only the user can:** how it actually *looks* on each of the four distros. Workflow: launch per machine, set `ui_scale` once in Settings; it persists there.
 
 **Header responsiveness + retro pills:** the larger px fonts made the header toolbar clip in narrow/cornered windows. Fixes: removed the decorative "SESSIONS" label; added a `ui_scale`-aware minimum window size (560×300 @100%) so the header can't be squeezed until it clips; restyled the `#chip` buttons as hard-edge HUD pills (0px corners, 1px border, accent-on-hover, UPPERCASE) — first step toward an 8-bit/Mega-Man revision. Baseline scaling confirmed on host by the user; pill restyle + min-size not yet visually confirmed.
+
+---
+
+## Attack-surface classification — 2026-06-01
+
+Reviewed as part of the workspace-wide audit campaign. Verdict: **no security
+attack surface — shape pass only, security n/a.** What was checked and why it
+holds:
+
+- **No network.** No HTTP server, socket, `urllib`/`requests`, or any listener.
+  The app is a single-user local desktop GUI (PySide6). Nothing accepts remote
+  input.
+- **Subprocess use is safe.** The only two spawns are the chime player
+  (`pomo_qt.py:382`) and `notify-send` (`pomo_qt.py:396`). Both use list-form
+  argv (no shell, `shell=True` never used). The player binary is resolved from a
+  fixed allowlist (`paplay`/`aplay`/`afplay`/`play`, `pomo_qt.py:338`) and the
+  audio path is a fixed name inside the system temp dir — neither is derived from
+  untrusted input. No command-injection vector.
+- **Deserialization is safe.** All persistence is `json.load`/`json.dump`
+  (`pomo_qt.py:60`–`75`) — never `pickle`, `eval`, `yaml.load`, or
+  `__import__`. Malformed JSON is caught and falls back to a default.
+- **Filesystem writes are confined.** Targets are fixed paths under
+  `POMO_DATA_DIR` (defaults to `~/.local/share/pomo`) and the temp chime dir.
+  No path component comes from untrusted input; no traversal vector.
+- **No secrets / credentials.** No tokens, keys, or auth handling. `.gitleaks.toml`
+  plus the privacy-guard pre-commit hook and audit script (`scripts/`) already
+  guard against accidental secret commits.
+- **Input is the user's own.** GUI fields (durations, task names, templates) feed
+  back into the same user's local timer/state. There is no privilege boundary to
+  cross and no second party.
+
+The data files live in a user-owned directory, so their integrity is bounded by
+the OS user account — consistent with any local config-driven tool. No source
+changes were warranted from the security angle.
+
+**Verified this pass:** `python3 -m py_compile pomo_qt.py gen_icon.py` (clean),
+`bash -n run.sh install.sh` (clean), the F1/F3 fixes recorded above are present in
+the live source. Container/runtime config untouched (none exists here beyond the
+install/run shell scripts, which were not modified). GUI behavior remains
+host-only and unverifiable in a display-less VM.
