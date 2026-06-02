@@ -1,0 +1,17 @@
+# lan-guard trusted-SSID allowlist — TEMPLATE.
+#
+# Copy this file to `.lan-allow` (which is gitignored) and list the Wi-Fi SSIDs
+# on which you permit a dev server to bind all interfaces (--host / 0.0.0.0):
+#
+#     cp .lan-allow.example .lan-allow
+#
+# One SSID per line. Blank lines and lines starting with # are ignored. Match
+# is exact (case- and space-sensitive). On any SSID NOT listed here — and on
+# wired / Wi-Fi-off / undetectable networks — `scripts/lan-guard.sh` refuses to
+# run the wrapped command (fail-closed).
+#
+# SSIDs are network identifiers: keep them in the gitignored `.lan-allow`, never
+# in this committed template. Example (delete, use your own):
+#
+# my-home-wifi
+# my-home-wifi-5g

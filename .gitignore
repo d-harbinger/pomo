@@ -13,3 +13,7 @@ build/
 # privacy-guard: track .claude/settings.json (project hook config), ignore the rest
 .claude/*
 !.claude/settings.json
+# privacy-guard: per-clone trusted-SSID allowlist for lan-guard (gitignored — SSIDs are network identifiers)
+.lan-allow
+# privacy-guard: local script log output (audit, host gates, build/test logs)
+.dev-logs/

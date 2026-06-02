@@ -22,32 +22,16 @@ GREEN=$'\e[32m'
 YELLOW=$'\e[33m'
 RESET=$'\e[0m'
 
-BUILTIN_PATTERNS=(
-  # Host / device identifiers
-  '\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b'
-  '\b(192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})\b'
-  '/home/[a-z][a-z0-9_-]*/'
-  '/Users/[A-Za-z][A-Za-z0-9_-]*/'
-  '\bIMEI[: ]*[0-9]{15}\b'
-  # ADB-listing-style device serial (token 8-16 chars then "device"). Scanned
-  # against file content here (no diff prefix), so the ^ anchor is correct.
-  '^[A-Z0-9]{8,16}[[:space:]]+device([[:space:]]|$)'
-  '(Samsung|Galaxy|Pixel|Google)[[:space:]]+[A-Z][A-Z0-9]{6,}\b'
-  # API keys / tokens
-  '(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})'
-  '\bAKIA[0-9A-Z]{16}\b'
-  'sk-ant-[A-Za-z0-9_-]{32,}'
-  'sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}'
-  'xox[baprs]-[0-9A-Za-z-]{10,}'
-  'sk_live_[A-Za-z0-9]{24,}'
-  'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'
-  # Crypto / signing material
-  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
-  '-----BEGIN OPENSSH PRIVATE KEY-----'
-  '-----BEGIN PGP PRIVATE KEY BLOCK-----'
-  # Personal identifiers
-  '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b'
-)
+PG_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/patterns.sh"
+if [ ! -f "$PG_LIB" ]; then
+  printf '%s\n' "${RED}privacy-guard: pattern library missing at $PG_LIB — install incomplete; re-run install.sh --force${RESET}" >&2
+  exit 1
+fi
+# shellcheck source=lib/patterns.sh
+. "$PG_LIB"
+
+# Detection patterns: single-sourced from lib/patterns.sh (scope commit|both).
+mapfile -t BUILTIN_PATTERNS < <(pg_grep_patterns)
 
 repo_root="$(git rev-parse --show-toplevel)"
 extra_patterns_file="$repo_root/.privacy-patterns"
@@ -69,48 +53,51 @@ range="${1:-}"
 
 echo "${YELLOW}audit-privacy: scanning ${range:-full history} against ${#ALL_PATTERNS[@]} pattern(s)${RESET}"
 
-# Exclude the scanner sources from the bash-layer scan: their bodies contain
-# the regex pattern *definitions* (e.g. `-----BEGIN ... PRIVATE KEY-----`),
-# which would self-match. The pre-commit hook applies the same exclusion;
-# gitleaks handles it via the `[allowlist]` block in .gitleaks.toml.
-#
-# templates/* paths are the canonical-source layout for the privacy-guard
-# repo itself at <privacy-guard>/. Inert in normal consuming
-# projects (no templates/ dir); prevents self-match in the guard repo.
-EXCLUDE_PATHS=(
-  ':(exclude)scripts/hooks/*'
-  ':(exclude)scripts/audit-privacy.sh'
-  ':(exclude).privacy-patterns.example'
-  ':(exclude).privacy-allow'
-  ':(exclude).privacy-allow.example'
-  ':(exclude).gitleaks.toml'
-  ':(exclude)templates/pre-commit'
-  ':(exclude)templates/audit-privacy.sh'
-  ':(exclude)templates/gitleaks.toml'
-  ':(exclude)templates/privacy-patterns.example'
-)
+# Self-match excludes — the scanner sources plus lib/patterns.sh (which now
+# holds the regex definitions) and the templates/ tree — are single-sourced
+# from lib/patterns.sh as PG_EXCLUDE_PATHS. The pre-commit hook reuses the same
+# list; gitleaks handles its own via the `[allowlist]` block in .gitleaks.toml.
+EXCLUDE_PATHS=( "${PG_EXCLUDE_PATHS[@]}" )
 
-# Demo / synthetic data declared in .privacy-allow (committed, one path-glob
-# per line; `#` comments and blank lines ignored). Realistic fixtures —
-# sample LAN IPs, demo MACs, seed CSVs — are indistinguishable from a real
-# leak to a regex, so the repo declares them once here and the scanner trusts
-# the declaration. Unlike .privacy-patterns (per-clone, gitignored, ADDS
-# patterns) this is a property of the repo and is committed so every clone
-# agrees on what's intentional. Globs use git's :(glob) magic, so write the
-# `**` explicitly: `public/samples/**`, `tests/fixtures/**`, `**/*.seed.ts`.
-# Both scans below feed off EXCLUDE_PATHS, so these declarations are honored
-# in the current tree and in history alike. For a gitleaks-detected match
-# inside demo data, add the path to [allowlist].paths in .gitleaks.toml.
+# Synthetic data declared in .privacy-allow (committed, one literal VALUE per
+# line; `#` comments and blank lines ignored). Same file and same value-based
+# model as the pre-commit hook: scan everything (only the tool's own source is
+# path-excluded above) and suppress a finding ONLY when the matched text is
+# exactly a declared value. Allowing a value, never a path, is what stops a real
+# identifier from hiding in an allow-listed fixture directory. For a gitleaks-
+# detected match inside demo data, use [allowlist] in .gitleaks.toml instead.
 allow_file="$repo_root/.privacy-allow"
+ALLOW_VALUES=()
 if [ -f "$allow_file" ]; then
   while IFS= read -r raw; do
     line="${raw%%#*}"                          # strip inline comment
     line="${line#"${line%%[![:space:]]*}"}"    # ltrim
     line="${line%"${line##*[![:space:]]}"}"    # rtrim
     [ -z "$line" ] && continue
-    EXCLUDE_PATHS+=(":(exclude,glob)$line")
+    ALLOW_VALUES+=("$line")
   done < "$allow_file"
 fi
+
+_is_allowed() {  # exact match against a declared synthetic value
+  local v="$1" a
+  for a in "${ALLOW_VALUES[@]}"; do [ "$v" = "$a" ] && return 0; done
+  return 1
+}
+
+# Read lines on stdin; print a line only if it still holds a match of $1 whose
+# value is NOT declared synthetic. A line whose every match is an allowed value
+# is dropped — the same per-value suppression the hook applies.
+_filter_unallowed() {
+  local pat="$1" line v keep
+  while IFS= read -r line; do
+    keep=0
+    while IFS= read -r v; do
+      [ -z "$v" ] && continue
+      _is_allowed "$v" || { keep=1; break; }
+    done < <(printf '%s\n' "$line" | grep -Eo -- "$pat" 2>/dev/null)
+    [ "$keep" -eq 1 ] && printf '%s\n' "$line"
+  done
+}
 
 hits=0
 for pat in "${ALL_PATTERNS[@]}"; do
@@ -119,13 +106,13 @@ for pat in "${ALL_PATTERNS[@]}"; do
   # TRACKED files (so vendored trees like node_modules are skipped) and honors
   # the same EXCLUDE_PATHS pathspecs as the history scan below — including
   # whatever .privacy-allow declared.
-  current_matches="$(git grep -nE -e "$pat" -- "${EXCLUDE_PATHS[@]}" 2>/dev/null || true)"
+  current_matches="$(git grep -nE -e "$pat" -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | _filter_unallowed "$pat" || true)"
 
   # Step 2: scan history.
   if [ -n "$range" ]; then
-    history_matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" || true)"
+    history_matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
   else
-    history_matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" || true)"
+    history_matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
   fi
 
   if [ -n "$current_matches" ] || [ -n "$history_matches" ]; then

@@ -37,6 +37,12 @@ paths = [
   '''^templates/audit-privacy\.sh$''',
   '''^templates/gitleaks\.toml$''',
   '''^templates/privacy-patterns\.example$''',
+  # lib/patterns.sh is the single source of the regex definitions (incl. PEM /
+  # OpenSSH key headers) after the pattern-centralization refactor — same
+  # self-match reason as the scanner scripts above. Without this, installing
+  # the lib blocks its own commit on gitleaks' private-key rule.
+  '''^scripts/lib/patterns\.sh$''',
+  '''^templates/lib/patterns\.sh$''',
 ]
 
 # To allow a literal known-safe value (e.g., a documentation example token),
