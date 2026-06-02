@@ -21,16 +21,15 @@
 #   scripts/hooks/pre-commit; if you tweak one, mirror the others.
 set -euo pipefail
 
-SCRUB_SED='
-    s/\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/<mac>/g;
-    s/\b(192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})\b/<lan-ip>/g;
-    s/\bIMEI[: ]*[0-9]{15}\b/IMEI:<imei>/g;
-    s/(Samsung|Galaxy|Pixel|Google)([[:space:]]+)[A-Z][A-Z0-9]{6,}\b/\1\2<serial>/g;
-    s/\b[A-Z][0-9A-Z]{9,11}\b/<serial>/g;
-    s|/home/[a-z][a-z0-9_-]*/|/home/<user>/|g;
-    s|/Users/[A-Za-z][A-Za-z0-9_-]*/|/Users/<user>/|g;
-    s/\b([a-z][a-z0-9-]*)\.local\b/<hostname>.local/g;
-'
+PG_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/patterns.sh"
+if [ ! -f "$PG_LIB" ]; then
+  printf '%s\n' "privacy-guard: pattern library missing at $PG_LIB — install incomplete; re-run install.sh --force" >&2
+  exit 1
+fi
+# shellcheck source=lib/patterns.sh
+. "$PG_LIB"
+
+SCRUB_SED="$(pg_sed_program)"
 
 if [[ $# -gt 0 ]]; then
     # Run the supplied command; merge stderr into stdout so probe errors
