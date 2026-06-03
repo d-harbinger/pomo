@@ -6,6 +6,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# generated app icon — gen_icon.py is the single source of truth; install.sh
+# and the app regenerate pomo.png on demand, so the bitmap is a build artifact,
+# not a tracked source (it changes byte-for-byte on every regen otherwise).
+pomo.png
 # privacy-guard: per-clone patterns file (gitignored; see .privacy-patterns.example)
 .privacy-patterns
 # privacy-guard: privacy-related script log output (audit, host gates, etc.)
