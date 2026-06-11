@@ -18,7 +18,8 @@
 
 # Ordered names. Probe/both slice == historical SCRUB_SED order.
 PG_PATTERN_NAMES=(
-  mac rfc1918_ip imei vendor_serial generic_serial home_path users_path local_hostname
+  mac rfc1918_ip imei vendor_serial generic_serial home_path users_path ws_mount vbox_sf
+  local_hostname
   adb_serial github_pat aws_key anthropic_key openai_key slack_token stripe_key jwt
   pem_key openssh_key pgp_key ssn email phone
 )
@@ -31,6 +32,11 @@ declare -A PG_REGEX=(
   [generic_serial]='\b[A-Z][0-9A-Z]{9,11}\b'
   [home_path]='/home/[a-z][a-z0-9_-]*/'
   [users_path]='/Users/[A-Za-z][A-Za-z0-9_-]*/'
+  # Workspace mount points. Deliberately narrow (named mounts, not all of
+  # /mnt/) so container-internal paths like /mnt/storage in compose files
+  # don't false-positive; add per-clone mount names to .privacy-patterns.
+  [ws_mount]='/mnt/(Projects|shared)\b'
+  [vbox_sf]='/media/sf_[A-Za-z0-9_-]+'
   [local_hostname]='\b([a-z][a-z0-9-]*)\.local\b'
   [adb_serial]='^[A-Z0-9]{8,16}[[:space:]]+device([[:space:]]|$)'
   [github_pat]='(ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})'
@@ -56,13 +62,15 @@ declare -A PG_REPLACE=(
   [generic_serial]='<serial>'
   [home_path]='/home/<user>/'
   [users_path]='/Users/<user>/'
+  [ws_mount]='<workspace>'
+  [vbox_sf]='<shared-folder>'
   [local_hostname]='<hostname>.local'
   [phone]='<phone>'
 )
 
 declare -A PG_SCOPE=(
   [mac]=both [rfc1918_ip]=both [imei]=both [vendor_serial]=both
-  [home_path]=both [users_path]=both
+  [home_path]=both [users_path]=both [ws_mount]=both [vbox_sf]=both
   [generic_serial]=probe [local_hostname]=probe
   [adb_serial]=commit [github_pat]=commit [aws_key]=commit [anthropic_key]=commit
   [openai_key]=commit [slack_token]=commit [stripe_key]=commit [jwt]=commit
@@ -83,6 +91,21 @@ PG_EXCLUDE_PATHS=(
   ':(exclude).privacy-allow.example'
   ':(exclude).gitleaks.toml'
   ':(exclude)templates/'
+
+  # Dependency lockfiles: their integrity digests (npm sha512 base64, etc.) contain
+  # substrings that false-positive the bare-serial pattern, and lockfiles never carry
+  # device/host identifiers. Excluded from the BASH scan only — gitleaks still scans
+  # them for real secrets (it does not consult this list). `*` matches `/` in git
+  # pathspec, so each entry matches the file at any depth (root + subdirs).
+  ':(exclude)*package-lock.json'
+  ':(exclude)*pnpm-lock.yaml'
+  ':(exclude)*yarn.lock'
+  ':(exclude)*npm-shrinkwrap.json'
+  ':(exclude)*Cargo.lock'
+  ':(exclude)*go.sum'
+  ':(exclude)*composer.lock'
+  ':(exclude)*poetry.lock'
+  ':(exclude)*Gemfile.lock'
 )
 
 # Print one detection regex per line for grep consumers (scope commit|both).
