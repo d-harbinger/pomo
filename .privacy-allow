@@ -1,0 +1,11 @@
+# .privacy-allow — synthetic / intentional values this repo contains, declared
+# as literal VALUES (one per line) so the guard stops flagging them. COMMITTED.
+# See .privacy-allow.example for the full format notes.
+
+# The bundled ws_mount pattern matches the workspace's own mount paths, which
+# appear in committed docs/configs as the project path. Generic, deprecated
+# mount points (standardized to ~/Projects on 2026-06-11), not device
+# identifiers. Scoped to the exact literals so a genuinely sensitive mount
+# (e.g. /media/sf_*) still fires.
+/mnt/Projects
+/mnt/shared
