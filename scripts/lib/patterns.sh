@@ -29,7 +29,16 @@ declare -A PG_REGEX=(
   [rfc1918_ip]='\b(192\.168\.[0-9]{1,3}\.[0-9]{1,3}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3})\b'
   [imei]='\bIMEI[: ]*[0-9]{15}\b'
   [vendor_serial]='(Samsung|Galaxy|Pixel|Google)([[:space:]]+)[A-Z][A-Z0-9]{6,}\b'
-  [generic_serial]='\b[A-Z][0-9A-Z]{9,11}\b'
+  # 10-12 char uppercase-alnum run that contains >=1 DIGIT, starting with a
+  # letter. The digit requirement is what makes this value-shaped: a real device
+  # serial always carries digits, but an all-uppercase path/route/constant token
+  # (e.g. a route file named GETSESSIONS) has none. The old form '[A-Z][0-9A-Z]{9,11}'
+  # had no digit anchor and scrubbed such filenames, denying legitimate file reads
+  # while protecting nothing. ERE cannot express "fixed length AND contains a digit"
+  # compactly, so this is the exact union over the first-digit position for each
+  # tail length 9-11 (machine-generated; brute-force-verified equivalent to the
+  # spec). It mirrors the commit-side bare-serial filter's "must contain a digit".
+  [generic_serial]='\b[A-Z]([0-9][0-9A-Z]{8}|[A-Z]{1}[0-9][0-9A-Z]{7}|[A-Z]{2}[0-9][0-9A-Z]{6}|[A-Z]{3}[0-9][0-9A-Z]{5}|[A-Z]{4}[0-9][0-9A-Z]{4}|[A-Z]{5}[0-9][0-9A-Z]{3}|[A-Z]{6}[0-9][0-9A-Z]{2}|[A-Z]{7}[0-9][0-9A-Z]{1}|[A-Z]{8}[0-9]|[0-9][0-9A-Z]{9}|[A-Z]{1}[0-9][0-9A-Z]{8}|[A-Z]{2}[0-9][0-9A-Z]{7}|[A-Z]{3}[0-9][0-9A-Z]{6}|[A-Z]{4}[0-9][0-9A-Z]{5}|[A-Z]{5}[0-9][0-9A-Z]{4}|[A-Z]{6}[0-9][0-9A-Z]{3}|[A-Z]{7}[0-9][0-9A-Z]{2}|[A-Z]{8}[0-9][0-9A-Z]{1}|[A-Z]{9}[0-9]|[0-9][0-9A-Z]{10}|[A-Z]{1}[0-9][0-9A-Z]{9}|[A-Z]{2}[0-9][0-9A-Z]{8}|[A-Z]{3}[0-9][0-9A-Z]{7}|[A-Z]{4}[0-9][0-9A-Z]{6}|[A-Z]{5}[0-9][0-9A-Z]{5}|[A-Z]{6}[0-9][0-9A-Z]{4}|[A-Z]{7}[0-9][0-9A-Z]{3}|[A-Z]{8}[0-9][0-9A-Z]{2}|[A-Z]{9}[0-9][0-9A-Z]{1}|[A-Z]{10}[0-9])\b'
   [home_path]='/home/[a-z][a-z0-9_-]*/'
   [users_path]='/Users/[A-Za-z][A-Za-z0-9_-]*/'
   # Workspace mount points. Deliberately narrow (named mounts, not all of

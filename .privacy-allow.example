@@ -25,3 +25,12 @@
 # Read by BOTH scripts/hooks/pre-commit and scripts/audit-privacy.sh, so the
 # commit gate and the history audit agree. For a match found by GITLEAKS inside
 # demo data instead, add it to [allowlist] in .gitleaks.toml.
+
+# The bundled ws_mount pattern (lib/patterns.sh) matches the workspace's own
+# mount paths. Those same literals appear in the privacy policy and these guard
+# docs as teaching examples — the guard flagging its own explanation. They are
+# generic, deprecated mount points (standardized to ~/Projects), not device
+# identifiers, so declare them by default. Scoped to the exact literals: a real
+# sensitive mount (e.g. /media/sf_*, /mnt/secrets) still fires.
+/mnt/Projects               # deprecated workspace mount, quoted as a doc example
+/mnt/shared                 # deprecated shared-folder mount, quoted as a doc example

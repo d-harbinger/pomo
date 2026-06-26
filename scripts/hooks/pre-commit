@@ -177,11 +177,34 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   exit 1
 fi
 
+# Resolve the gitleaks config. A per-repo .gitleaks.toml at the repo root WINS
+# when present (the common case today — unchanged behavior). Only when the repo
+# ships no per-repo config do we fall back to the central privacy-guard copy,
+# resolved relative to this hook's own location (scripts/hooks/pre-commit ->
+# two dirs up = the privacy-guard root), the same dirname-chain trick the hook
+# already uses for lib/patterns.sh. This is the code half of the global-hook
+# migration: additive and dormant until a consumer stops shipping its own config.
+# If neither config exists, fail closed — consistent with the missing-lib and
+# missing-gitleaks postures above; we never scan with no config or skip silently.
+gl_config="$repo_root/.gitleaks.toml"
+if [ ! -f "$gl_config" ]; then
+  central_config="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/.gitleaks.toml"
+  if [ -f "$central_config" ]; then
+    gl_config="$central_config"
+  else
+    printf '%s\n' "${RED}--- pre-commit privacy guard: no gitleaks config found ---${RESET}"
+    printf '%s\n' "${YELLOW}Looked for a per-repo config at:${RESET}  $repo_root/.gitleaks.toml"
+    printf '%s\n' "${YELLOW}and the central privacy-guard config at:${RESET}  $central_config"
+    printf '%s\n' "${YELLOW}install incomplete — re-run install.sh --force${RESET}"
+    exit 1
+  fi
+fi
+
 # `protect --staged` scans the staged index, not the working tree. --redact
 # replaces the secret value in the report with [REDACTED] so the secret itself
 # is never written to terminal scrollback. --no-banner suppresses the ASCII
 # logo on every run.
-if ! gitleaks protect --staged --redact --no-banner --config="$repo_root/.gitleaks.toml" 2>&1; then
+if ! gitleaks protect --staged --redact --no-banner --config="$gl_config" 2>&1; then
   printf '%s\n' ""
   printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks found one or more secrets ---${RESET}"
   printf '%s\n' "${YELLOW}If a match is a real secret:${RESET}  remove it from the staged file, re-stage, re-commit."

@@ -29,6 +29,17 @@ paths = [
   '''^scripts/hooks/pre-commit$''',
   '''^scripts/audit-privacy\.sh$''',
   '''^\.privacy-patterns\.example$''',
+  # The allow-format files are the trust registry + its teaching example. They
+  # CONTAIN known-safe synthetic secrets by design (the canonical AWS doc key
+  # AKIAIOSFODNN7EXAMPLE, bare PEM/OpenSSH key headers) so the bash layer can
+  # exact-match-suppress them — but gitleaks reads files, not the registry, so it
+  # flags those literals against itself. Path-allowlisting these three (NOT a
+  # global regex for the key headers, which would blind the private-key rule
+  # repo-wide) is the safe fix. A consumer's own .privacy-allow holds IPs/paths
+  # that no gitleaks rule matches, so this is inert there; it only matters where
+  # the file declares secret-shaped values (privacy-guard itself, .example).
+  '''^\.privacy-allow\.example$''',
+  '''^\.privacy-allow$''',
   '''^\.gitleaks\.toml$''',
   # privacy-guard canonical sources — inert in normal projects (no templates/
   # dir), used by <privacy-guard>/ itself to self-host without
@@ -37,6 +48,7 @@ paths = [
   '''^templates/audit-privacy\.sh$''',
   '''^templates/gitleaks\.toml$''',
   '''^templates/privacy-patterns\.example$''',
+  '''^templates/privacy-allow\.example$''',
   # lib/patterns.sh is the single source of the regex definitions (incl. PEM /
   # OpenSSH key headers) after the pattern-centralization refactor — same
   # self-match reason as the scanner scripts above. Without this, installing
