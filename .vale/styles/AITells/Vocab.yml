@@ -1,0 +1,29 @@
+extends: existence
+message: "AI-tell '%s' — cut it, or say the concrete thing instead."
+level: warning
+ignorecase: true
+# Lexical and prefab-phrase tells from prose-standard.md. Deliberately does NOT
+# flag em dashes: the research refuted em-dash-as-reliable-tell, and the craft
+# canon uses them. Earn each dash; do not ban it.
+tokens:
+  - delve[sd]? into
+  - delve[sd]?
+  - rich tapestry
+  - tapestry
+  - testament to
+  - pivotal
+  - crucial
+  - underscore[sd]?
+  - vibrant
+  - landscape of
+  - realm of
+  - navigat(e|ing) the
+  - ever-evolving
+  - fast-paced
+  - it is (important|worth noting) to
+  - in today'?s (world|landscape|digital age)
+  - at the end of the day
+  - serves as (a |an )?
+  - stands as (a |an )?
+  - not only .{1,50}? but also
+  - it'?s not just .{1,50}? it'?s
