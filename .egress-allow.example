@@ -1,0 +1,45 @@
+# .egress-allow — third-party network hosts this repo is ALLOWED to contact,
+# declared one per line. COMMITTED (copy this file to `.egress-allow`), so every
+# clone agrees on what egress is intentional.
+#
+# WHY THIS EXISTS: a memory or a code-review note can't stop an author — or an AI
+# agent — from wiring in a data broker. A commit-side block can. The pre-commit
+# guard extracts external http(s) hostnames from staged CODE and blocks any host
+# that is neither a universal safe-default nor listed here. So a NEW third-party
+# service trips a conscious decision the way a device serial does, instead of
+# shipping silently. (Origin: a dashboard widget shipped every bookmarked
+# hostname to Google's favicon service on each load — no memory had stopped it.)
+#
+# MODE — report-only by DEFAULT. The guard WARNS about an undeclared host and
+# lets the commit through, so it rolls out with zero friction while a repo's
+# real egress is still being curated. Once this list is trustworthy, add a line
+# reading exactly:
+#     enforce
+# and the guard BLOCKS commits that add an undeclared host in this repo. Until
+# then it only warns. (The broad URL scan errs toward noise on purpose, so
+# enforcing before curation would wall off editing legitimate URL DATA —
+# bookmarks, source citations, feed lists.)
+#
+# HOSTS, NOT PATHS. Trust a value, never a location. Each line is a hostname; a
+# host also matches its dot-boundary subdomains, so `open-meteo.com` allows
+# `api.open-meteo.com` but NOT `evil-open-meteo.com`. A leading dot is optional.
+#
+# ALREADY SAFE WITHOUT LISTING (universal safe-defaults, baked into the guard):
+#   localhost / 127.0.0.1 / 0.0.0.0 / ::1        (same-origin / loopback)
+#   *.local *.test *.invalid *.example           (reserved TLDs, RFC 6761)
+#   example.com / .org / .net / .edu             (documentation names, RFC 2606)
+#   w3.org schema.org purl.org xmlns.com …       (XML/SVG/RDF namespace URIs)
+#
+# NOT SCANNED: prose files (*.md, *.rst, *.txt, README/LICENSE/CHANGELOG) — a
+# link in documentation is a reference, not egress. Declare only real egress
+# that lives in code or config.
+#
+# The mission default is same-origin / self-hosted. Reach for this file only
+# when an external call is genuinely required — and prefer proxying it through
+# your own origin over calling a broker directly.
+#
+# Format: one hostname per line; `#` comments and blank lines ignored.
+
+# -- examples (delete or replace with this repo's real, intended egress) --
+# api.open-meteo.com
+# fonts.gstatic.com

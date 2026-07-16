@@ -153,6 +153,76 @@ if [ -n "$violations" ]; then
   exit 1
 fi
 
+# --- Layer 1.5: egress guard — third-party network hosts in staged code ------
+# Flag any external http(s) host in staged CODE that is neither a universal
+# safe-default (PG_EGRESS_SAFE, from lib/patterns.sh) nor declared in the
+# committed .egress-allow. PROSE files (*.md, *.rst, *.txt, README/LICENSE/
+# CHANGELOG) are excluded — a link in documentation is a reference, not egress;
+# egress that matters lives in code and config. This makes "no third-party
+# service without a conscious decision" mechanical instead of a rule an author
+# (or an AI agent) has to remember. Allow by VALUE (a host or its dot-boundary
+# parent domain), never by path — same posture as the identifier scan above.
+#
+# MODE: report-only by DEFAULT — it warns and lets the commit through, so the
+# layer can roll out with zero friction while each repo's real egress is still
+# being curated. A repo opts into BLOCKING by adding a line reading `enforce`
+# to its .egress-allow (do that once the allowlist is trustworthy). The broad
+# URL scan intentionally errs toward noise; enforcing before curation would
+# wall off editing legitimate URL DATA (bookmarks, citations, feed lists).
+egress_allow_file="$repo_root/.egress-allow"
+EGRESS_ALLOW=()
+EGRESS_ENFORCE=0
+if [ -f "$egress_allow_file" ]; then
+  while IFS= read -r raw; do
+    line="${raw%%#*}"                          # strip inline comment
+    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+    line="${line%"${line##*[![:space:]]}"}"    # rtrim
+    [ -z "$line" ] && continue
+    line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+    if [ "$line" = "enforce" ]; then EGRESS_ENFORCE=1; continue; fi  # mode directive, not a host
+    EGRESS_ALLOW+=("$line")
+  done < "$egress_allow_file"
+fi
+
+# Staged added CODE lines: the identifier excludes PLUS prose/doc files.
+staged_code="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" \
+  ':(exclude)*.md' ':(exclude)*.markdown' ':(exclude)*.rst' ':(exclude)*.txt' \
+  ':(exclude)*README*' ':(exclude)*CHANGELOG*' ':(exclude)*LICENSE*' \
+  | grep -E '^\+' | sed 's/^+//' || true)"
+
+if [ -n "$staged_code" ]; then
+  egress_hits=""
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    pg_egress_safe_host "$host" && continue
+    allowed=0
+    for a in "${EGRESS_ALLOW[@]}"; do
+      pg_host_matches "$host" "$a" && { allowed=1; break; }
+    done
+    [ "$allowed" = 1 ] && continue
+    egress_hits="${egress_hits}  ${host}
+"
+  done < <(printf '%s\n' "$staged_code" | pg_egress_extract)
+
+  if [ -n "$egress_hits" ]; then
+    if [ "$EGRESS_ENFORCE" = 1 ]; then
+      printf '%s\n' "${RED}--- pre-commit privacy guard: staged code adds third-party network host(s) ---${RESET}"
+      printf '%s\n' "${YELLOW}Not a universal safe-default, and not declared in .egress-allow:${RESET}"
+      printf '%s\n' "$egress_hits"
+      printf '%s\n' "${YELLOW}Prefer a same-origin / self-hosted alternative when one exists (the mission default).${RESET}"
+      printf '%s\n' "${YELLOW}If this egress is intended, add the host to .egress-allow (one per line), then re-commit.${RESET}"
+      printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
+      exit 1
+    else
+      printf '%s\n' "${YELLOW}--- privacy guard: egress guard (report-only) — third-party network host(s) in staged code ---${RESET}"
+      printf '%s\n' "${YELLOW}Not a universal safe-default, and not declared in .egress-allow:${RESET}"
+      printf '%s\n' "$egress_hits"
+      printf '%s\n' "${YELLOW}Report-only: NOT blocking this commit. Add a real, intended host to .egress-allow;${RESET}"
+      printf '%s\n' "${YELLOW}once the list is trustworthy, add a line reading  enforce  to make this repo block.${RESET}"
+    fi
+  fi
+fi
+
 # ----------------------------------------------------------------------------
 # Layer 2: gitleaks. The bash patterns above cover workspace-specific things
 # gitleaks doesn't know about (device serials, /home/<user>/ paths, RFC1918

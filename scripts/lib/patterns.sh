@@ -98,6 +98,8 @@ PG_EXCLUDE_PATHS=(
   ':(exclude).privacy-patterns.example'
   ':(exclude).privacy-allow'
   ':(exclude).privacy-allow.example'
+  ':(exclude).egress-allow'
+  ':(exclude).egress-allow.example'
   ':(exclude).gitleaks.toml'
   ':(exclude)templates/'
 
@@ -134,4 +136,56 @@ pg_sed_program() {
       probe|both) printf 's@%s@%s@g;\n' "${PG_REGEX[$n]}" "${PG_REPLACE[$n]}";;
     esac
   done
+}
+
+# ── Egress guard (commit-stage) ──────────────────────────────────────────────
+# Third-party network egress is the parallel leak class to device identifiers:
+# a memory can't stop an author — or an AI agent — from wiring in a data broker,
+# but a commit-side block can. The hook (below) extracts external hostnames from
+# staged CODE (http(s):// literals) and blocks any host that is neither a
+# universal safe-default (here) nor declared in the repo's committed
+# `.egress-allow`. Same posture as the identifier scan: trust a VALUE (an exact
+# host or its dot-boundary parent domain), never a path. The origin was a live
+# leak — a dashboard widget shipped every bookmarked hostname to google.com's
+# favicon service on each load; a memory hadn't stopped it, a gate would have.
+
+# Hosts that are never real egress: reserved / documentation names (RFC 2606 +
+# 6761) and XML / SVG / RDF namespace identifiers (a browser never fetches an
+# xmlns URI — `http://www.w3.org/2000/svg` is an identifier, not a request).
+# Matched by exact host OR dot-boundary suffix, case-insensitive.
+PG_EGRESS_SAFE=(
+  localhost 127.0.0.1 0.0.0.0 ::1
+  local test invalid example
+  example.com example.org example.net example.edu
+  w3.org schema.org purl.org xmlns.com ns.adobe.com
+  sodipodi.sourceforge.net inkscape.org creativecommons.org
+)
+
+# 0 if $1 (a host) equals $2, or is a dot-boundary subdomain of $2. A leading
+# dot on the pattern is tolerated (".local" and "local" behave the same). The
+# dot boundary is what keeps "evil-w3.org" from matching an allowed "w3.org".
+pg_host_matches() {
+  local host="$1" pat="${2#.}"
+  [ "$host" = "$pat" ] && return 0
+  case "$host" in *".$pat") return 0;; esac
+  return 1
+}
+
+# 0 if $1 is a universal safe-default host (exact or dot-boundary suffix).
+pg_egress_safe_host() {
+  local host="$1" s
+  for s in "${PG_EGRESS_SAFE[@]}"; do
+    pg_host_matches "$host" "$s" && return 0
+  done
+  return 1
+}
+
+# Read stdin, print one lowercased external hostname per http(s):// URL found.
+# Scheme-relative //host is deliberately NOT matched — `//` is too common in
+# code and comments to flag without an explicit scheme.
+pg_egress_extract() {
+  grep -Eoi 'https?://[A-Za-z0-9._~%-]+' \
+    | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's#^https?://##' \
+    | sort -u
 }
