@@ -1651,6 +1651,14 @@ class TemplatesDialog(QDialog):
     def _build(self):
         v = QVBoxLayout(self)
         v.setSpacing(8)
+        self._populate(v)
+
+    def _populate(self, layout):
+        """Fill the dialog body: one row per template slot, then Close.
+
+        The single source for the slot-row structure — used by the
+        initial build and by _rebuild after any slot changes.
+        """
         slots = self._load()
         for i in range(TEMPLATE_SLOTS):
             row = QHBoxLayout()
@@ -1658,14 +1666,10 @@ class TemplatesDialog(QDialog):
             label = QLabel(slot["name"] if slot else f"Slot {i + 1}")
             label.setMinimumWidth(160)
             row.addWidget(label)
-            if slot:
-                summary = QLabel(self._summarize(slot["sessions"]))
-                summary.setObjectName("muted")
-                row.addWidget(summary, 1)
-            else:
-                empty = QLabel("empty")
-                empty.setObjectName("muted")
-                row.addWidget(empty, 1)
+            summary = QLabel(
+                self._summarize(slot["sessions"]) if slot else "empty")
+            summary.setObjectName("muted")
+            row.addWidget(summary, 1)
 
             save_btn = QPushButton("Save current")
             save_btn.setObjectName("chip")
@@ -1687,12 +1691,13 @@ class TemplatesDialog(QDialog):
                 del_btn.clicked.connect(
                     lambda _=False, idx=i: self._delete(idx))
                 row.addWidget(del_btn)
-            v.addLayout(row)
+            layout.addLayout(row)
 
+        # Close is the box's only button; it carries the reject role, so
+        # no accepted wiring exists (Esc rejects as well).
         bb = QDialogButtonBox(QDialogButtonBox.Close)
         bb.rejected.connect(self.reject)
-        bb.accepted.connect(self.accept)
-        v.addWidget(bb)
+        layout.addWidget(bb)
 
     def _summarize(self, sessions):
         work = sum(1 for s in sessions if s.get("type") == "work")
@@ -1761,7 +1766,8 @@ class TemplatesDialog(QDialog):
         self._rebuild()
 
     def _rebuild(self):
-        # Tear down and rebuild dialog body. Keeps state in sync.
+        # Tear down the dialog body, then refill it from the same
+        # _populate the initial build uses. Keeps state in sync.
         layout = self.layout()
         while layout.count():
             it = layout.takeAt(0)
@@ -1775,38 +1781,7 @@ class TemplatesDialog(QDialog):
                         sub_it = sub.takeAt(0)
                         if sub_it.widget():
                             sub_it.widget().deleteLater()
-        # Re-populate.
-        slots = self._load()
-        for i in range(TEMPLATE_SLOTS):
-            row = QHBoxLayout()
-            slot = slots[i]
-            label = QLabel(slot["name"] if slot else f"Slot {i + 1}")
-            label.setMinimumWidth(160)
-            row.addWidget(label)
-            if slot:
-                summary = QLabel(self._summarize(slot["sessions"]))
-                summary.setObjectName("muted")
-                row.addWidget(summary, 1)
-            else:
-                empty = QLabel("empty"); empty.setObjectName("muted")
-                row.addWidget(empty, 1)
-            save_btn = QPushButton("Save current"); save_btn.setObjectName("chip")
-            save_btn.clicked.connect(lambda _=False, idx=i: self._save_to(idx))
-            row.addWidget(save_btn)
-            if slot:
-                lb = QPushButton("Load"); lb.setObjectName("chip")
-                lb.clicked.connect(lambda _=False, idx=i: self._load_from(idx))
-                row.addWidget(lb)
-                rb = QPushButton("Rename"); rb.setObjectName("chip")
-                rb.clicked.connect(lambda _=False, idx=i: self._rename(idx))
-                row.addWidget(rb)
-                db = QPushButton("×"); db.setObjectName("chip")
-                db.clicked.connect(lambda _=False, idx=i: self._delete(idx))
-                row.addWidget(db)
-            self.layout().addLayout(row)
-        bb = QDialogButtonBox(QDialogButtonBox.Close)
-        bb.rejected.connect(self.reject)
-        self.layout().addWidget(bb)
+        self._populate(layout)
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
