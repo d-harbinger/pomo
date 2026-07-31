@@ -1,5 +1,16 @@
+# Virtual environments. run.sh and install.sh create a per-host `venv-<hostname>`
+# so one shared checkout works from several machines, which puts the machine name
+# in a directory name; the other entries cover the conventional names a
+# contributor may create by hand. Every venv also stores the absolute path of the
+# checkout — including the account name — inside pyvenv.cfg and its bin/ shebangs,
+# so none of them may ever be committed. Listing them here rather than relying on
+# the .gitignore that venv writes inside its own directory keeps the guarantee in
+# the repository.
 venv/
 venv-*/
+.venv/
+env/
+myenv/
 __pycache__/
 *.pyc
 .env
