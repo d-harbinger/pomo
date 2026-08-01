@@ -43,6 +43,83 @@ fi
 mapfile -t BUILTIN_PATTERNS < <(pg_grep_patterns)
 
 repo_root="$(git rev-parse --show-toplevel)"
+
+# ----------------------------------------------------------------------------
+# Layer 0: commit identity.
+#
+# Author and committer metadata publish with every commit and cannot be
+# corrected afterwards without rewriting history. That makes a wrong identity
+# the one class of leak the content scan below can never catch: it is never
+# present in a staged file, so grepping the diff misses it entirely.
+#
+# The rule: the address must be a GitHub no-reply address, which attributes the
+# commit to the account without publishing a mailbox. A repo that deliberately
+# commits under some other identity declares it in a committed
+# `.identity-allow` — one address or `*@domain` glob per line.
+#
+# Resolved with `git var`, not `git config`, so a per-invocation override
+# (`git -c user.email=… commit`) is checked too. That is not hypothetical: a
+# fleet-wide automation command pinned an address this way and wrote it into
+# the author metadata of every repository it touched, public ones included.
+#
+# Unlike the egress layer below, this one BLOCKS by default. The match is an
+# exact glob against a single field, so it has no false-positive noise to
+# curate, and the damage it prevents is the only kind that cannot be undone by
+# editing a file and committing again.
+# ----------------------------------------------------------------------------
+identity_allow_file="$repo_root/.identity-allow"
+IDENTITY_ALLOW=('*@users.noreply.github.com')
+if [ -f "$identity_allow_file" ]; then
+  while IFS= read -r raw; do
+    line="${raw%%#*}"                          # strip inline comment
+    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+    line="${line%"${line##*[![:space:]]}"}"    # rtrim
+    [ -z "$line" ] && continue
+    IDENTITY_ALLOW+=("$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')")
+  done < "$identity_allow_file"
+fi
+
+_identity_allowed() {
+  local addr pat
+  addr="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  for pat in "${IDENTITY_ALLOW[@]}"; do
+    # shellcheck disable=SC2053  # glob match is intended; do not quote $pat
+    [[ "$addr" == $pat ]] && return 0
+  done
+  return 1
+}
+
+identity_violations=""
+for _role in AUTHOR COMMITTER; do
+  # Format: "Name <addr> 1720000000 -0700" — take the angle-bracketed address.
+  _ident="$(git var "GIT_${_role}_IDENT" 2>/dev/null || true)"
+  _addr="${_ident##*<}"; _addr="${_addr%%>*}"
+  # Empty means git could not resolve an identity at all; git fails the commit
+  # itself in that case, with a clearer message than this hook would give.
+  [ -z "$_addr" ] && continue
+  if ! _identity_allowed "$_addr"; then
+    _label="$(printf '%s' "$_role" | tr '[:upper:]' '[:lower:]')"
+    identity_violations="${identity_violations}  ${_label}: ${_addr}
+"
+  fi
+done
+
+if [ -n "$identity_violations" ]; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: commit identity is not a declared one ---${RESET}"
+  printf '%s\n' "$identity_violations"
+  printf '%s\n' "${YELLOW}Author and committer metadata publish with the commit and cannot be${RESET}"
+  printf '%s\n' "${YELLOW}corrected later without rewriting history. Set the machine identity once:${RESET}"
+  printf '%s\n' ""
+  printf '%s\n' "  git config --global user.email '<ID>+<user>@users.noreply.github.com'"
+  printf '%s\n' "  git config --global user.name  '<user>'"
+  printf '%s\n' ""
+  printf '%s\n' "${YELLOW}The address is shown at github.com/settings/emails (Keep my email private).${RESET}"
+  printf '%s\n' "${YELLOW}Check for a per-repo override that beats the global:${RESET}  git config --local user.email"
+  printf '%s\n' "${YELLOW}If this repo genuinely commits under another identity, declare it in${RESET}"
+  printf '%s\n' "${YELLOW}.identity-allow (one address or *@domain per line), then re-commit.${RESET}"
+  exit 1
+fi
+
 extra_patterns_file="$repo_root/.privacy-patterns"
 
 # Load user-supplied patterns (per-clone, gitignored).

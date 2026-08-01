@@ -1,0 +1,35 @@
+# .identity-allow — commit identities this repository accepts.
+#
+# Copy to `.identity-allow` and COMMIT it. Unlike `.privacy-patterns` (which is
+# per-clone and gitignored), this file is a property of the repository: every
+# clone should agree on who is allowed to author its commits.
+#
+# The guard blocks a commit whose author OR committer address is not listed
+# here. GitHub no-reply addresses are always accepted and need no entry:
+#
+#     *@users.noreply.github.com
+#
+# so most repositories never need this file at all.
+#
+# Why the default is a no-reply address: author and committer metadata publish
+# with every commit and cannot be corrected afterwards without rewriting
+# history and force-pushing. A no-reply address attributes the commit to the
+# account without publishing a mailbox, which keeps that mistake unavailable
+# rather than merely discouraged.
+#
+# One entry per line. An entry is either a full address or a `*@domain` glob.
+# Matching is case-insensitive. Comments and blank lines are ignored.
+#
+# Declare an identity here when the repository genuinely commits under it —
+# for example a project that signs its work with a team domain, or one that
+# accepts contributions from a build account. Do not add an address merely to
+# silence the guard on a machine that is misconfigured; fix the machine:
+#
+#     git config --global user.email '<ID>+<user>@users.noreply.github.com'
+#
+# (The address is shown at github.com/settings/emails under "Keep my email
+# address private". Check `git config --local user.email` too — a per-repo
+# override beats the global one and is easy to forget.)
+
+# *@example-team.org
+# releases@example-team.org

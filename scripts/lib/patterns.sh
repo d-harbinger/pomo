@@ -100,6 +100,8 @@ PG_EXCLUDE_PATHS=(
   ':(exclude).privacy-allow.example'
   ':(exclude).egress-allow'
   ':(exclude).egress-allow.example'
+  ':(exclude).identity-allow'
+  ':(exclude).identity-allow.example'
   ':(exclude).gitleaks.toml'
   ':(exclude)templates/'
 
