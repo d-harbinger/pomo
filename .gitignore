@@ -32,3 +32,7 @@ pomo.png
 .lan-allow
 # privacy-guard: local script log output (audit, host gates, build/test logs)
 .dev-logs/
+# privacy-guard: wireless capture log — holds live-air network identifiers
+*.kismet
+# privacy-guard: wireless capture journal — same content, same rule
+*.kismet-journal

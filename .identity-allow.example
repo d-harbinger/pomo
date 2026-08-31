@@ -31,5 +31,5 @@
 # address private". Check `git config --local user.email` too — a per-repo
 # override beats the global one and is easy to forget.)
 
-# *@example-team.org
-# releases@example-team.org
+# *@example.com
+# releases@example.com

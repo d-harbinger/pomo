@@ -51,13 +51,59 @@ ALL_PATTERNS=("${BUILTIN_PATTERNS[@]}" "${EXTRA_PATTERNS[@]}")
 # Default range = entire history. Caller may pass a narrower revision range.
 range="${1:-}"
 
-echo "${YELLOW}audit-privacy: scanning ${range:-full history} against ${#ALL_PATTERNS[@]} pattern(s)${RESET}"
+EXCLUDE_PATHS=( "${PG_EXCLUDE_PATHS[@]}" )
+
+# Scope — the paths this project actually writes, declared in the committed
+# .privacy-scope (one git pathspec per line, `#` comments). Absent, everything
+# is scanned, which is the behaviour every repository has today.
+#
+# It exists for a shape the value-based allow list cannot express. A fork that
+# vendors a large upstream carries that upstream's files, and with them every
+# contact address its maintainers put in their own source. One such repository
+# matches 128 distinct values that way, around a hundred of them third-party
+# addresses and none of them the owner's. Silencing those by value would mean
+# committing a list of other people's contact details, which is a worse outcome
+# than the finding it answers.
+#
+# Entries are git pathspecs, so a scope may name the paths a project writes or
+# exclude the ones it merely carries. For a fork the second is the practical
+# form: listing everything an upstream fork authors is impractical, while
+# naming the vendored packaging directory is one line.
+#
+# That does make this a path exemption, which the allow-list note below refuses
+# for values. What makes it safe here is a different control, and it is the
+# whole argument: **the commit hook is not scoped**. It reads every staged line
+# in every path, so an identifier written into an excluded directory is still
+# refused at the moment someone tries to commit it. The audit is the reporting
+# control and may be narrowed; the hook is the preventive one and is not.
+#
+# Verified rather than assumed: staging a file carrying a home path inside a
+# scope-excluded directory is still blocked by the hook.
+SCOPE_FILE="$repo_root/.privacy-scope"
+SCOPE_PATHS=()
+if [ -f "$SCOPE_FILE" ]; then
+  while IFS= read -r raw; do
+    line="${raw%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    SCOPE_PATHS+=("$line")
+  done < "$SCOPE_FILE"
+fi
+if [ "${#SCOPE_PATHS[@]}" -gt 0 ]; then
+  PATHSPEC=( "${SCOPE_PATHS[@]}" "${EXCLUDE_PATHS[@]}" )
+  SCOPE_NOTE=" · scoped to ${#SCOPE_PATHS[@]} declared path(s) in .privacy-scope"
+else
+  PATHSPEC=( "${EXCLUDE_PATHS[@]}" )
+  SCOPE_NOTE=""
+fi
+
+echo "${YELLOW}audit-privacy: scanning ${range:-full history} against ${#ALL_PATTERNS[@]} pattern(s)${SCOPE_NOTE}${RESET}"
 
 # Self-match excludes — the scanner sources plus lib/patterns.sh (which now
 # holds the regex definitions) and the templates/ tree — are single-sourced
 # from lib/patterns.sh as PG_EXCLUDE_PATHS. The pre-commit hook reuses the same
 # list; gitleaks handles its own via the `[allowlist]` block in .gitleaks.toml.
-EXCLUDE_PATHS=( "${PG_EXCLUDE_PATHS[@]}" )
 
 # Synthetic data declared in .privacy-allow (committed, one literal VALUE per
 # line; `#` comments and blank lines ignored). Same file and same value-based
@@ -80,7 +126,18 @@ fi
 
 _is_allowed() {  # exact match against a declared synthetic value
   local v="$1" a
-  for a in "${ALLOW_VALUES[@]}"; do [ "$v" = "$a" ] && return 0; done
+  for a in "${ALLOW_VALUES[@]}"; do
+    [ "$v" = "$a" ] && return 0
+    # A history match is extracted from a diff line, so it can carry the leading
+    # +/- marker: several patterns (the address one especially) accept "+" and
+    # "-" as value characters, so the marker is swallowed into the match and
+    # "+ci-bot@example.com" never equals the declared "ci-bot@example.com".
+    # Declared values then kept firing on every added line, forever, which is
+    # exactly the "a check that never clears teaches its reader to skip it"
+    # failure. Compared with the marker stripped as well as with it intact, so a
+    # value that genuinely begins with one is still matched on its own terms.
+    [ "${v#[+-]}" = "$a" ] && return 0
+  done
   return 1
 }
 
@@ -106,13 +163,13 @@ for pat in "${ALL_PATTERNS[@]}"; do
   # TRACKED files (so vendored trees like node_modules are skipped) and honors
   # the same EXCLUDE_PATHS pathspecs as the history scan below — including
   # whatever .privacy-allow declared.
-  current_matches="$(git grep -nE -e "$pat" -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | _filter_unallowed "$pat" || true)"
+  current_matches="$(git grep -nE -e "$pat" -- "${PATHSPEC[@]}" 2>/dev/null | _filter_unallowed "$pat" || true)"
 
   # Step 2: scan history.
   if [ -n "$range" ]; then
-    history_matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
+    history_matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${PATHSPEC[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
   else
-    history_matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${EXCLUDE_PATHS[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
+    history_matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${PATHSPEC[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
   fi
 
   if [ -n "$current_matches" ] || [ -n "$history_matches" ]; then
@@ -155,7 +212,11 @@ fi
 
 echo ""
 if [ "$hits" -eq 0 ]; then
-  echo "${GREEN}audit-privacy: clean — no patterns matched in scanned range.${RESET}"
+  if [ -n "$SCOPE_NOTE" ]; then
+    echo "${GREEN}audit-privacy: clean within the declared scope — ${#SCOPE_PATHS[@]} path(s); paths outside .privacy-scope were NOT scanned.${RESET}"
+  else
+    echo "${GREEN}audit-privacy: clean — no patterns matched in scanned range.${RESET}"
+  fi
   exit 0
 else
   echo "${RED}audit-privacy: ${hits} issue(s) found. Review above.${RESET}"
