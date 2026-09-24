@@ -1,0 +1,35 @@
+# .privacy-scope — the paths the full-history audit reads. COMMITTED.
+#
+# Copy to `.privacy-scope` only if this repository needs it. Most do not:
+# absent this file the audit reads everything, which is the right behaviour for
+# a repository of its own code, and installing the guard narrows nothing.
+#
+# It exists for a shape the value-based `.privacy-allow` cannot express. A fork
+# that vendors a large upstream carries that upstream's files, and with them
+# every contact address its maintainers wrote into their own source. Silencing
+# those by value would mean committing a list of other people's contact
+# details, which is a worse outcome than the finding it answers — so such a
+# repository can never come back clean, and a check that cannot reach zero
+# stops being read.
+#
+# WHAT MAKES NARROWING THE AUDIT SAFE is a separate control, and it is the whole
+# argument: THE COMMIT HOOK IS NOT SCOPED. It reads every staged line in every
+# path, so an identifier written into an excluded directory is still refused at
+# the moment someone tries to commit it. The audit is the reporting control and
+# may be narrowed; the hook is the preventive one and is not.
+#
+# One git pathspec per line; `#` starts a comment. Entries may name the paths a
+# project writes or exclude the ones it merely carries — for a fork the second
+# is usually the practical form, since listing everything an upstream fork
+# authors is impractical while naming the vendored directory is one line.
+#
+# Say WHY beside each entry. An unexplained exclusion is indistinguishable from
+# a place someone hid something.
+#
+# Example — a fork whose vendored packaging carries upstream maintainers'
+# addresses, and nothing of the project's own:
+#
+#   :(exclude)pkgs/pkgbuilds/
+#
+# Everything not named here stays in scope, which is the point: the files the
+# project actually writes are the ones where an identifier would be its own.
