@@ -91,6 +91,7 @@ declare -A PG_SCOPE=(
 # lib files, which now hold the literal regex/PEM definitions). Recursively
 # excludes templates/ via a directory pathspec to avoid the `*`-matches-`/`
 # footgun the old enumerated list dodged.
+# shellcheck disable=SC2034  # read by audit-privacy.sh and the pre-commit hook, which source this file
 PG_EXCLUDE_PATHS=(
   ':(exclude)scripts/hooks/*'
   ':(exclude)scripts/audit-privacy.sh'
