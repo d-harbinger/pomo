@@ -30,14 +30,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QImage,
+    QColor, QFont, QGuiApplication, QIcon, QImage,
     QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox,
     QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QSizePolicy, QSpinBox, QStyle, QStyleOption, QToolButton,
+    QPushButton, QSizePolicy, QSpinBox, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -78,70 +78,19 @@ def save_json(path: Path, data):
         json.dump(data, f, indent=2)
 
 
-# ── Themes ───────────────────────────────────────────────────────────────────
+# ── Look ─────────────────────────────────────────────────────────────────────
 
-THEMES = {
-    # Frosted look. The window background is a translucent dark tint (see
-    # "Glass frosting" below); every accent is white, so session types are
-    # told apart by label. Colours with alpha are #AARRGGBB.
-    "glass": {
-        "bg": "#8c12161c", "surface": "#14ffffff", "surface_light": "#1fffffff",
-        "work": "#ffffff", "work_dim": "#1fffffff",
-        "break": "#ffffff", "break_dim": "#1fffffff",
-        "long_break": "#ffffff", "long_break_dim": "#1fffffff",
-        "text": "#ffffff", "text_dim": "#80ffffff", "text_muted": "#59ffffff",
-        "done": "#59ffffff", "done_text": "#59ffffff",
-        "glass": True, "dialog_bg": "#171b21", "border": "#17ffffff",
-        "minutes": "#73ffffff", "radius": 22,
-    },
-    "midnight": {
-        "bg": "#1a1a2e", "surface": "#16213e", "surface_light": "#1f3056",
-        "work": "#e94560", "work_dim": "#8b2a3a",
-        "break": "#0f9b58", "break_dim": "#0a6b3d",
-        "long_break": "#4a90d9", "long_break_dim": "#2d5a8a",
-        "text": "#eaeaea", "text_dim": "#8892a0", "text_muted": "#5a6474",
-        "done": "#3a4a5a", "done_text": "#6a7a8a",
-    },
-    "ember": {
-        "bg": "#1a1614", "surface": "#2a211c", "surface_light": "#3a2d24",
-        "work": "#ff7a45", "work_dim": "#a04828",
-        "break": "#d4a574", "break_dim": "#8a6b4a",
-        "long_break": "#c69a5e", "long_break_dim": "#7d6140",
-        "text": "#f4ecd8", "text_dim": "#a8998a", "text_muted": "#6a5d50",
-        "done": "#3a312a", "done_text": "#7a6d60",
-    },
-    "forest": {
-        "bg": "#0f1a14", "surface": "#17271e", "surface_light": "#20362a",
-        "work": "#5cc78a", "work_dim": "#2f7a4f",
-        "break": "#8fb48d", "break_dim": "#5a7759",
-        "long_break": "#6fb8c9", "long_break_dim": "#417480",
-        "text": "#e8f0e4", "text_dim": "#8fa598", "text_muted": "#566b5f",
-        "done": "#2a3a30", "done_text": "#6a8576",
-    },
-    "ocean": {
-        "bg": "#0d1b2a", "surface": "#1b2a3c", "surface_light": "#2a3d52",
-        "work": "#5eb3ff", "work_dim": "#2d6a9e",
-        "break": "#76d5c7", "break_dim": "#3e8a80",
-        "long_break": "#a78bfa", "long_break_dim": "#6b52a8",
-        "text": "#e4ecf5", "text_dim": "#8ea0b4", "text_muted": "#546578",
-        "done": "#2a3a4a", "done_text": "#6b7e92",
-    },
-    "mono": {
-        "bg": "#141414", "surface": "#1f1f1f", "surface_light": "#2a2a2a",
-        "work": "#e8e8e8", "work_dim": "#8a8a8a",
-        "break": "#a8a8a8", "break_dim": "#6a6a6a",
-        "long_break": "#888888", "long_break_dim": "#555555",
-        "text": "#f0f0f0", "text_dim": "#a0a0a0", "text_muted": "#606060",
-        "done": "#333333", "done_text": "#707070",
-    },
-    "plum": {
-        "bg": "#1a1320", "surface": "#271d33", "surface_light": "#362a48",
-        "work": "#d070d0", "work_dim": "#803a80",
-        "break": "#9b5fc9", "break_dim": "#5e3a80",
-        "long_break": "#ef8fa8", "long_break_dim": "#95546a",
-        "text": "#efe4f5", "text_dim": "#a598b4", "text_muted": "#655878",
-        "done": "#322a3f", "done_text": "#7d6e90",
-    },
+# Frosted glass, the one look. The window background is a translucent dark
+# tint (see "Glass frosting" below); every accent is white, so session types
+# are told apart by label. Colours with alpha are #AARRGGBB.
+THEME = {
+    "bg": "#8c12161c", "surface": "#14ffffff", "surface_light": "#1fffffff",
+    "work": "#ffffff", "work_dim": "#1fffffff",
+    "break": "#ffffff", "break_dim": "#1fffffff",
+    "long_break": "#ffffff", "long_break_dim": "#1fffffff",
+    "text": "#ffffff", "text_dim": "#80ffffff", "text_muted": "#59ffffff",
+    "done_text": "#59ffffff", "dialog_bg": "#171b21", "border": "#17ffffff",
+    "minutes": "#73ffffff", "radius": 22,
 }
 
 
@@ -162,12 +111,12 @@ def fs(points: float) -> str:
     return f"{max(1, round(points * 4 / 3 * UI_SCALE))}px"
 
 
-def stylesheet(theme: dict) -> str:
-    """Translate the theme dict into a Qt stylesheet.
+def stylesheet() -> str:
+    """Translate THEME into a Qt stylesheet.
 
     Qt's stylesheet engine is CSS-like — one place sets every widget's look.
     """
-    t = theme
+    t = THEME
     css = f"""
     QWidget {{
         background-color: {t['bg']};
@@ -288,14 +237,6 @@ def stylesheet(theme: dict) -> str:
         font-size: {fs(13)}; font-weight: 600; color: {t['text']};
         letter-spacing: 0.5px;
     }}
-    QLabel#titleDot {{
-        color: {t['work']}; font-size: {fs(14)}; padding-bottom: 2px;
-    }}
-    QFrame#hairline {{
-        background-color: {t['surface_light']};
-        border: none;
-        max-height: 1px;
-    }}
     QPushButton#addRow {{
         background: transparent;
         color: {t['text_muted']};
@@ -347,9 +288,8 @@ def stylesheet(theme: dict) -> str:
     QMenu::item {{ padding: 6px 18px; border-radius: 4px; }}
     QMenu::item:selected {{ background-color: {t['surface_light']}; }}
     """
-    if theme.get("glass"):
-        d = t["dialog_bg"]
-        css += f"""
+    d = t["dialog_bg"]
+    css += f"""
     /* Glass: the main window paints its own frosted tint, so widgets are
        see-through; dialogs and popups stay solid. */
     QWidget {{ background-color: transparent; }}
@@ -394,7 +334,6 @@ def stylesheet(theme: dict) -> str:
     QLabel#muted {{
         font-size: {fs(8)}; font-weight: 600; color: {t['text_dim']};
     }}
-    QFrame#hairline {{ background-color: transparent; }}
     QPushButton#addRow {{
         color: {t['text_muted']}; border: none; padding: 9px 0px;
         font-size: {fs(11)}; font-weight: 300;
@@ -509,7 +448,7 @@ def _blurred_wallpaper(size: QSize):
 
 
 class Central(QWidget):
-    """Central widget. Paints the glass tint when the theme asks for it."""
+    """Central widget. Paints the glass tint."""
 
     def __init__(self, win: "PomoWindow"):
         super().__init__()
@@ -517,13 +456,7 @@ class Central(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
 
     def paintEvent(self, event):
-        if self._win.paint_glass(self):
-            return
-        # Solid themes: the stylesheet background, as for any plain QWidget.
-        opt = QStyleOption()
-        opt.initFrom(self)
-        p = QPainter(self)
-        self.style().drawPrimitive(QStyle.PE_Widget, opt, p, self)
+        self._win.paint_glass(self)
 
 
 # ── Sounds ───────────────────────────────────────────────────────────────────
@@ -668,7 +601,6 @@ class RingTimer(QWidget):
         self._dim = QColor("#8b2a3a")
         self._text_color = QColor("#eaeaea")
         self._text_dim = QColor("#8892a0")
-        self._glass = False
 
     def set_state(self, progress, time_text, label, color, dim,
                   text, text_dim):
@@ -686,12 +618,10 @@ class RingTimer(QWidget):
             self.clicked.emit()
         super().mousePressEvent(event)
 
-    def set_glass(self, glass: bool):
-        self._glass = glass
-        self.update()
-
-    def _paint_glass(self, p: QPainter):
+    def paintEvent(self, _event):
         """Thin ring, small-caps label above light tabular digits."""
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
         size = min(self.width(), self.height())
         ring_w = max(2, size // 48)
         cx, cy = self.width() / 2, self.height() / 2
@@ -733,58 +663,6 @@ class RingTimer(QWidget):
                              self.width(), int(label_size * 2)),
                        Qt.AlignHCenter | Qt.AlignBottom, self._label)
 
-    def paintEvent(self, _event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        if self._glass:
-            self._paint_glass(p)
-            return
-        size = min(self.width(), self.height())
-        ring_w = max(2, size // 28)
-        cx, cy = self.width() / 2, self.height() / 2
-        r = max(8, (size / 2) - ring_w - 4)
-        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-
-        # Track
-        pen = QPen(self._dim, ring_w, Qt.SolidLine, Qt.FlatCap)
-        p.setPen(pen)
-        p.drawEllipse(rect)
-
-        # Progress arc — Qt angles are in 1/16ths of a degree.
-        if self._progress > 0.001:
-            pen = QPen(self._color, ring_w, Qt.SolidLine, Qt.RoundCap)
-            p.setPen(pen)
-            start = 90 * 16
-            span = -int(360 * self._progress * 16)
-            p.drawArc(rect, start, span)
-
-        # Time text — scale with the inner diameter so it always fits
-        # inside the ring (no min-clamp; ring shrinks freely with window).
-        time_size = max(8, int(size * 0.16))
-        f = QFont("JetBrains Mono")
-        f.setPixelSize(time_size)
-        if not f.exactMatch():
-            f = QFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
-            f.setPixelSize(time_size)
-        f.setBold(True)
-        p.setFont(f)
-        p.setPen(self._text_color)
-        time_rect = QRect(0, int(cy - time_size), self.width(), time_size * 2)
-        p.drawText(time_rect, Qt.AlignCenter, self._time_text)
-
-        # Label below — hide it once the ring is too small to fit cleanly.
-        if size >= 130:
-            label_size = max(7, int(size * 0.052))
-            lf = QFont()
-            lf.setPixelSize(label_size)
-            p.setFont(lf)
-            p.setPen(self._text_dim)
-            label_rect = QRect(
-                0, int(cy + time_size * 0.6),
-                self.width(), label_size * 3)
-            p.drawText(label_rect, Qt.AlignHCenter | Qt.AlignTop, self._label)
-
-
 # ── Session row widget ──────────────────────────────────────────────────────
 
 class SessionRow(QWidget):
@@ -803,105 +681,10 @@ class SessionRow(QWidget):
         self.session = session
         self.setObjectName("sessionRowCurrent" if is_current else "sessionRow")
 
-        t = THEMES[app.theme_name]
-        accent = (t["work"] if session.type == "work"
-                  else t["break"] if session.type == "short_break"
-                  else t["long_break"])
-        muted = t["text_muted"]
-        text_color = t["done_text"] if session.done else t["text"]
+        self._build(THEME, is_current)
 
-        if t.get("glass"):
-            self._init_glass(t, is_current)
-            return
-
-        h = QHBoxLayout(self)
-        h.setContentsMargins(0, 3, 6, 3)
-        h.setSpacing(8)
-
-        # Drag handle — visible affordance that rows are reorderable.
-        handle = QLabel("⠿")
-        handle.setStyleSheet(
-            f"color: {muted}; font-size: {fs(12)}; padding: 0 2px;")
-        handle.setFixedWidth(16)
-        handle.setAlignment(Qt.AlignCenter)
-        handle.setCursor(Qt.SizeAllCursor)
-        handle.setToolTip("Drag to reorder")
-        h.addWidget(handle)
-
-        # Colored type stripe. Active row gets a thicker stripe so it
-        # reads as the focal point of the queue.
-        stripe = QFrame()
-        stripe.setFixedWidth(5 if is_current else 2)
-        stripe.setStyleSheet(
-            f"background: {accent if not session.done else muted};"
-            "border: none;")
-        h.addWidget(stripe)
-
-        # Status marker — only present for done/current.
-        marker_text = ("✓" if session.done
-                       else "▸" if is_current
-                       else "")
-        marker_color = (muted if session.done
-                        else accent if is_current
-                        else muted)
-        marker = QLabel(marker_text)
-        marker.setStyleSheet(
-            f"color: {marker_color}; font-size: {fs(11)}; "
-            "background: transparent;")
-        marker.setFixedWidth(12)
-        marker.setAlignment(Qt.AlignCenter)
-        h.addWidget(marker)
-
-        # Name — heavier on the current row to anchor the eye.
-        self.name_lbl = QLabel(session.name)
-        weight = ("normal" if session.done
-                  else "600" if is_current
-                  else "500")
-        self.name_lbl.setStyleSheet(
-            f"color: {text_color}; font-size: {fs(10)}; "
-            f"font-weight: {weight}; background: transparent;")
-        self.name_lbl.setCursor(Qt.IBeamCursor)
-        self.name_lbl.mouseDoubleClickEvent = (
-            lambda _e: self.app._rename_index(self.index))
-        h.addWidget(self.name_lbl, 1)
-
-        # Duration ± — current row's duration picks up the accent so
-        # you instantly see what's about to run.
-        minus = QPushButton("−"); minus.setObjectName("rowChip")
-        minus.setFixedSize(18, 18)
-        minus.setFlat(True)
-        minus.clicked.connect(lambda: self.app._adjust_duration(self.index, -1))
-        h.addWidget(minus)
-
-        dur_color = (accent if is_current and not session.done
-                     else muted)
-        self.dur_lbl = QLabel(f"{session.duration}m")
-        self.dur_lbl.setStyleSheet(
-            f"color: {dur_color}; font-size: {fs(9)}; "
-            f"font-weight: {'600' if is_current else 'normal'}; "
-            "background: transparent;")
-        self.dur_lbl.setMinimumWidth(32)
-        self.dur_lbl.setAlignment(Qt.AlignCenter)
-        self.dur_lbl.setCursor(Qt.PointingHandCursor)
-        self.dur_lbl.mouseDoubleClickEvent = (
-            lambda _e: self.app._prompt_duration(self.index))
-        h.addWidget(self.dur_lbl)
-
-        plus = QPushButton("+"); plus.setObjectName("rowChip")
-        plus.setFixedSize(18, 18)
-        plus.setFlat(True)
-        plus.clicked.connect(lambda: self.app._adjust_duration(self.index, +1))
-        h.addWidget(plus)
-
-        delete = QPushButton("×"); delete.setObjectName("rowChip")
-        delete.setFixedSize(18, 18)
-        delete.setFlat(True)
-        delete.setToolTip("Remove")
-        delete.clicked.connect(lambda: self.app._remove(self.index))
-        h.addWidget(delete)
-
-    def _init_glass(self, t: dict, is_current: bool):
-        """Glass row: dot, light name, minutes at the right. The ±/× chips
+    def _build(self, t: dict, is_current: bool):
+        """Row: dot, light name, minutes at the right. The ±/× chips
         keep their actions but only show while the pointer is on the row."""
         session = self.session
         h = QHBoxLayout(self)
@@ -1011,7 +794,7 @@ class AddSessionPopup(QDialog):
         # Type picker — three small toggle buttons.
         type_row = QHBoxLayout()
         type_row.setSpacing(4)
-        t = THEMES[app.theme_name]
+        t = THEME
         self._type_buttons = {}
         for key, label, color in (
             ("work", "Focus", t["work"]),
@@ -1106,9 +889,9 @@ class PatternPopup(QDialog):
         h.setContentsMargins(10, 8, 10, 8)
         h.setSpacing(6)
 
-        # Three spinboxes labeled F/S/L. The labels echo the theme colors
+        # Three spinboxes labeled F/S/L. The labels echo the accent colors
         # for instant scanability (focus / short / long).
-        t = THEMES[app.theme_name]
+        t = THEME
         for label_text, key, color in (
             ("F", "focus", t["work"]),
             ("S", "short", t["break"]),
@@ -1155,7 +938,7 @@ class PatternPopup(QDialog):
 # ── Settings dialog ──────────────────────────────────────────────────────────
 
 class SettingsDialog(QDialog):
-    """One stop for theme / durations / sounds / notifications."""
+    """One stop for durations / sounds / notifications."""
 
     def __init__(self, app, parent=None):
         super().__init__(parent)
@@ -1169,15 +952,6 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(8)
         form.setLabelAlignment(Qt.AlignRight)
-
-        self.theme_combo = QComboBox()
-        for name in THEMES.keys():
-            self.theme_combo.addItem(name.capitalize(), name)
-        idx = self.theme_combo.findData(app.theme_name)
-        if idx >= 0:
-            self.theme_combo.setCurrentIndex(idx)
-        self.theme_combo.currentIndexChanged.connect(self._apply_theme)
-        form.addRow("Theme", self.theme_combo)
 
         self.work_spin = QSpinBox(); self.work_spin.setRange(1, 600)
         self.work_spin.setValue(app.durations["work"])
@@ -1236,10 +1010,6 @@ class SettingsDialog(QDialog):
         bb.rejected.connect(self.reject)
         layout.addWidget(bb)
 
-    def _apply_theme(self, _idx):
-        name = self.theme_combo.currentData()
-        self.app.set_theme(name)
-
 
 # ── Main window ──────────────────────────────────────────────────────────────
 
@@ -1262,9 +1032,6 @@ class PomoWindow(QMainWindow):
             "short": int(prefs.get("pattern_short", 3)),
             "long": int(prefs.get("pattern_long", 1)),
         }
-        self.theme_name = prefs.get("theme", "glass")
-        if self.theme_name not in THEMES:
-            self.theme_name = "glass"
         self.chain_auto_start = bool(prefs.get("chain_auto_start", False))
         self.auto_start_breaks = bool(prefs.get("auto_start_breaks", True))
         self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
@@ -1284,7 +1051,9 @@ class PomoWindow(QMainWindow):
         self._tick.timeout.connect(self._on_tick)
 
         self._build_ui()
-        self.set_theme(self.theme_name)
+        self._apply_frost()
+        QApplication.instance().setStyleSheet(stylesheet())
+        self._arrange_chrome()
         # Floor the window so the header row can't shrink until its labels
         # clip; scales with the UI multiplier.
         self.setMinimumSize(QSize(round(560 * UI_SCALE), round(300 * UI_SCALE)))
@@ -1337,7 +1106,6 @@ class PomoWindow(QMainWindow):
     def _persist_prefs(self):
         prefs = load_json(PREFS_FILE, {})
         prefs.update({
-            "theme": self.theme_name,
             "chain_auto_start": self.chain_auto_start,
             "auto_start_breaks": self.auto_start_breaks,
             "ui_scale": self.ui_scale,
@@ -1361,17 +1129,13 @@ class PomoWindow(QMainWindow):
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
 
-        # Top bar — title with an accent dot for identity.
+        # Top bar — title, the header chips, settings.
         top = QHBoxLayout()
         top.setSpacing(4)
-        self.title_dot = QLabel("●")
-        self.title_dot.setObjectName("titleDot")
-        top.addWidget(self.title_dot)
         title = QLabel("pomo")
         title.setObjectName("title")
         top.addWidget(title)
         top.addStretch()
-        # Empty except in glass, where the header chips live up here.
         self._top_chips = QHBoxLayout()
         top.addLayout(self._top_chips)
 
@@ -1382,15 +1146,6 @@ class PomoWindow(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         top.addWidget(self.settings_btn)
         root.addLayout(top)
-
-        # Hairline separator under the top bar.
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setObjectName("hairline")
-        sep.setFixedHeight(1)
-        root.addWidget(sep)
-        self._hairline = sep
-        self._top = top
 
         # Body: ring + controls on the left, sessions on the right.
         body = QHBoxLayout()
@@ -1406,8 +1161,7 @@ class PomoWindow(QMainWindow):
         lv.addLayout(self._build_controls_row())
         body.addWidget(left, 3)
 
-        self.session_panel, self.session_list, self.total_label = \
-            self._build_session_panel()
+        self.session_panel, self.session_list = self._build_session_panel()
         body.addWidget(self.session_panel, 4)
         root.addLayout(body, 1)
 
@@ -1418,14 +1172,12 @@ class PomoWindow(QMainWindow):
         root.addWidget(self.today_label)
 
     def _build_session_panel(self):
-        """Session list + add/manage row. Returns (wrap, list, total_label)."""
+        """Session list + add row. Returns (wrap, list); the header chips
+        are built here and placed in the top bar by _arrange_chrome."""
         wrap = QWidget()
         v = QVBoxLayout(wrap)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
-
-        head = QHBoxLayout()
-        head.setSpacing(0)
 
         restart = QPushButton("RESTART"); restart.setObjectName("chip")
         restart.clicked.connect(self.restart_stack)
@@ -1438,14 +1190,7 @@ class PomoWindow(QMainWindow):
         push_pat.clicked.connect(
             lambda: self._open_pattern_popup(push_pat))
 
-        # _arrange_chrome places the four controls: spread evenly across
-        # this bar, or (glass) packed into the top bar.
         self._chips = (restart, clear, templates, push_pat)
-        self._panel_head = head
-        v.addLayout(head)
-
-        total = QLabel(""); total.setObjectName("muted")
-        v.addWidget(total)
 
         lst = QListWidget()
         lst.setSelectionMode(QListWidget.SingleSelection)
@@ -1469,7 +1214,7 @@ class PomoWindow(QMainWindow):
         add_btn.clicked.connect(lambda: self._open_add_popup(add_btn))
         v.addWidget(add_btn)
 
-        return wrap, lst, total
+        return wrap, lst
 
     def _build_controls_row(self):
         row = self._ctl_row = QHBoxLayout()
@@ -1507,42 +1252,20 @@ class PomoWindow(QMainWindow):
         row.addStretch()
         return row
 
-    # ── Theme ────────────────────────────────────────────────────────────
-
-    def set_theme(self, name: str):
-        if name not in THEMES:
-            return
-        self.theme_name = name
-        self._apply_frost()
-        QApplication.instance().setStyleSheet(stylesheet(THEMES[name]))
-        self._arrange_chrome()
-        self._persist_prefs()
-        self._refresh_all()
-        self.centralWidget().update()
-
-    def _is_glass(self) -> bool:
-        return bool(THEMES[self.theme_name].get("glass"))
+    # ── Look ─────────────────────────────────────────────────────────────
 
     def _apply_frost(self):
-        """Decide translucency for the current theme.
+        """Decide translucency, once, before the window is first shown.
 
         WA_TranslucentBackground only takes effect when set before the
-        window is first shown, so it is applied at start. After that a theme
-        switch only changes the painting: glass picked later paints the faked
-        (opaque) frosting, and the attribute stays as it was.
+        window is first shown, so it is applied at start.
         """
-        if self.isVisible():
-            return
-        translucent = (self._is_glass()
-                       and frost_mode() in ("compositor", "wayland"))
+        translucent = frost_mode() in ("compositor", "wayland")
         self.setAttribute(Qt.WA_TranslucentBackground, translucent)
 
-    def paint_glass(self, widget: QWidget) -> bool:
-        """Paint the frosted tint on the central widget. False when the
-        current theme is not glass (the caller paints the solid look)."""
-        if not self._is_glass():
-            return False
-        t = THEMES[self.theme_name]
+    def paint_glass(self, widget: QWidget):
+        """Paint the frosted tint on the central widget."""
+        t = THEME
         translucent = self.testAttribute(Qt.WA_TranslucentBackground)
         radius = t["radius"] if translucent else 0
         rect = QRectF(widget.rect())
@@ -1571,68 +1294,44 @@ class PomoWindow(QMainWindow):
                             max(0, radius - 0.5), max(0, radius - 0.5))
         p.drawPath(edge)
         p.end()
-        return True
 
     def moveEvent(self, event):
         super().moveEvent(event)
         central = self.centralWidget()
-        if (central is not None and self._is_glass()
+        if (central is not None
                 and not self.testAttribute(Qt.WA_TranslucentBackground)):
             central.update()
 
     def _arrange_chrome(self):
-        """Layout and type details that differ between glass and the rest."""
-        glass = self._is_glass()
-        for lay in (self._panel_head, self._top_chips, self._ctl_row):
+        """Pack the chips into the top bar and center the controls."""
+        for lay in (self._top_chips, self._ctl_row):
             while lay.count():
                 lay.takeAt(0)
 
-        if glass:
-            for btn in self._chips:
-                self._top_chips.addWidget(btn)
-            self._top_chips.setSpacing(10)
-            self._top_chips.setContentsMargins(0, 0, 12, 0)
-            self._ctl_row.setSpacing(22)
-            self._ctl_row.addStretch()
-            for w in (self._reset_btn, self.start_btn, self._skip_btn):
-                self._ctl_row.addWidget(w)
-            self._ctl_row.addStretch()
-            self.start_btn.setFixedSize(44, 44)
-            self._root.setContentsMargins(22, 18, 22, 16)
-            self._root.setSpacing(8)
-        else:
-            for i, btn in enumerate(self._chips):
-                if i:
-                    self._panel_head.addStretch()
-                self._panel_head.addWidget(btn)
-            self._ctl_row.setSpacing(6)
-            for w in (self.start_btn, self._reset_btn, self._skip_btn):
-                self._ctl_row.addWidget(w)
-            self._ctl_row.addStretch()
-            self.start_btn.setFixedSize(56, 32)
-            self._root.setContentsMargins(10, 8, 10, 8)
-            self._root.setSpacing(6)
+        for btn in self._chips:
+            self._top_chips.addWidget(btn)
+        self._top_chips.setSpacing(10)
+        self._top_chips.setContentsMargins(0, 0, 12, 0)
+        self._ctl_row.setSpacing(22)
+        self._ctl_row.addStretch()
+        for w in (self._reset_btn, self.start_btn, self._skip_btn):
+            self._ctl_row.addWidget(w)
+        self._ctl_row.addStretch()
+        self.start_btn.setFixedSize(44, 44)
+        self._root.setContentsMargins(22, 18, 22, 16)
+        self._root.setSpacing(8)
 
-        self.title_dot.setVisible(not glass)
-        self._hairline.setVisible(not glass)
-        self.total_label.setVisible(not glass)
-        self.ring.set_glass(glass)
         for w in (*self._chips, self.today_label,
                   self.findChild(QLabel, "title")):
             f = w.font()
-            f.setCapitalization(QFont.AllUppercase if glass
-                                else QFont.MixedCase)
-            if glass:
-                f.setLetterSpacing(QFont.AbsoluteSpacing, 2.0 * UI_SCALE)
-            else:
-                f.setLetterSpacing(QFont.PercentageSpacing, 100)
+            f.setCapitalization(QFont.AllUppercase)
+            f.setLetterSpacing(QFont.AbsoluteSpacing, 2.0 * UI_SCALE)
             w.setFont(f)
 
     # ── Settings dialog ──────────────────────────────────────────────────
 
     def open_settings(self):
         dlg = SettingsDialog(self, self)
-        before_theme = self.theme_name
         if dlg.exec() == QDialog.Accepted:
             self.durations["work"] = dlg.work_spin.value()
             self.durations["short_break"] = dlg.short_spin.value()
@@ -1647,15 +1346,11 @@ class PomoWindow(QMainWindow):
             self.ui_scale = dlg.scale_spin.value() / 100.0
             set_ui_scale(self.ui_scale)
             self._persist_prefs()
-            QApplication.instance().setStyleSheet(
-                stylesheet(THEMES[self.theme_name]))
+            QApplication.instance().setStyleSheet(stylesheet())
             if self.timer_state == TimerState.IDLE:
                 self.remaining_seconds = self._current_session_seconds()
                 self.total_seconds = self.remaining_seconds
             self._refresh_all()
-        else:
-            if self.theme_name != before_theme:
-                self.set_theme(before_theme)
 
     # ── Session ops ──────────────────────────────────────────────────────
 
@@ -1897,11 +1592,8 @@ class PomoWindow(QMainWindow):
 
     # ── Display ──────────────────────────────────────────────────────────
 
-    def _theme(self):
-        return THEMES[self.theme_name]
-
     def _palette_for_session(self):
-        t = self._theme()
+        t = THEME
         if self.session_type == SessionType.WORK:
             return t["work"], t["work_dim"]
         if self.session_type == SessionType.SHORT_BREAK:
@@ -1926,7 +1618,7 @@ class PomoWindow(QMainWindow):
         time_text = f"{mins:02d}:{secs:02d}"
         color, dim = self._palette_for_session()
         label = self._label_for_session()
-        t = self._theme()
+        t = THEME
         self.ring.set_state(
             progress, time_text, label, color, dim,
             t["text"], t["text_dim"])
@@ -1980,21 +1672,6 @@ class PomoWindow(QMainWindow):
                 lst.setCurrentRow(self.current_index)
         finally:
             lst.blockSignals(False)
-
-        total_min = 0
-        pending = 0
-        for s in self.sessions:
-            if s.done:
-                continue
-            pending += 1
-            total_min += s.duration
-        if pending == 0:
-            self.total_label.setText("")
-        else:
-            hrs, mins = divmod(total_min, 60)
-            time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
-            self.total_label.setText(
-                f"{pending} pending · {time_str} planned")
 
     def _on_rows_moved(self, _parent, src_start, src_end, _dst_parent,
                        dst_row):
@@ -2056,13 +1733,8 @@ class PomoWindow(QMainWindow):
         hrs, mins = divmod(minutes, 60)
         time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
         plural = "s" if sessions != 1 else ""
-        if self._is_glass():
-            self.today_label.setText(
-                f"Today · {sessions} session{plural} · {time_str} focused")
-        else:
-            self.today_label.setText(
-                f"Today:  {sessions} session{plural}  ·  "
-                f"{time_str} focused")
+        self.today_label.setText(
+            f"Today · {sessions} session{plural} · {time_str} focused")
 
     def _refresh_all(self):
         self._refresh_display()

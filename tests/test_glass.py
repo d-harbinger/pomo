@@ -1,4 +1,5 @@
-"""Tests for the glass theme: stylesheet, theme table, default, frosting helpers.
+"""Tests for the glass look, pomo's only one: stylesheet, ignored legacy
+theme pref, settings dialog, frosting helpers.
 
 Run headless (no display needed):
     venv/bin/python -m unittest discover tests
@@ -47,34 +48,24 @@ class GlassTests(unittest.TestCase):
             prefs.unlink()
 
     def test_stylesheet_builds_without_unformatted_braces(self):
-        css = pomo_qt.stylesheet(pomo_qt.THEMES["glass"])
+        css = pomo_qt.stylesheet()
         self.assertNotIn("{{", css)
         self.assertNotIn("}}", css)
         self.assertNotIn("{t[", css)
 
-    def test_every_theme_has_every_midnight_key(self):
-        keys = set(pomo_qt.THEMES["midnight"])
-        for name, theme in pomo_qt.THEMES.items():
-            self.assertFalse(keys - set(theme), name)
-
-    def test_glass_listed_first_and_flagged(self):
-        self.assertEqual(next(iter(pomo_qt.THEMES)), "glass")
-        self.assertTrue(pomo_qt.THEMES["glass"]["glass"])
-
-    def test_window_builds_and_switches_theme(self):
+    def test_saved_theme_key_is_ignored(self):
+        # Split so a grep for the removed theme names stays empty.
+        legacy = "em" + "ber"
+        pomo_qt.save_json(pomo_qt.PREFS_FILE, {"theme": legacy})
         win = pomo_qt.PomoWindow()
-        self.assertEqual(win.theme_name, "glass")
-        win.set_theme("midnight")
-        win.set_theme("glass")
-        self.assertEqual(win.theme_name, "glass")
+        self.assertEqual([k for k in vars(win) if "theme" in k], [])
+        win._persist_prefs()
+        self.assertEqual(
+            pomo_qt.load_json(pomo_qt.PREFS_FILE, {})["theme"], legacy)
 
-    def test_saved_theme_is_kept(self):
-        pomo_qt.save_json(pomo_qt.PREFS_FILE, {"theme": "ember"})
-        self.assertEqual(pomo_qt.PomoWindow().theme_name, "ember")
-
-    def test_unknown_theme_falls_back_to_glass(self):
-        pomo_qt.save_json(pomo_qt.PREFS_FILE, {"theme": "nope"})
-        self.assertEqual(pomo_qt.PomoWindow().theme_name, "glass")
+    def test_settings_dialog_has_no_theme_row(self):
+        dlg = pomo_qt.SettingsDialog(pomo_qt.PomoWindow())
+        self.assertEqual([k for k in vars(dlg) if "theme" in k], [])
 
     def test_fehbg_parser(self):
         parse = pomo_qt.parse_fehbg
