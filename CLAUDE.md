@@ -49,6 +49,13 @@ the visual check to the owner.
   source of truth and both the installer and the app regenerate the bitmap;
   it is gitignored because it changes byte-for-byte on every regen. Do not
   hand-edit or commit it.
+- **Glass is the default theme and frosts three ways.** `THEMES["glass"]`
+  (flag `"glass": True`) paints its own tint in `Central.paintEvent`. On X11
+  with a compositor, and on Wayland, the window is translucent and the
+  compositor does the blur; on X11 without one (and offscreen) the wallpaper
+  named in `~/.fehbg` is blurred and drawn under the tint. The translucency
+  attribute is set before first show only, so picking glass in Settings
+  paints the faked frosting until the next launch.
 - **One toolkit, on purpose.** A parallel CustomTkinter implementation
   (`pomo.py`) was deleted in `60aa29e`, "drop legacy Tk implementation, make
   Qt canonical". Do not reintroduce a second UI toolkit or a second entry

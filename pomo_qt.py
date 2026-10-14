@@ -12,9 +12,11 @@ First cut focused on showing what the toolkit gets us:
 
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -26,16 +28,17 @@ from datetime import date
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QFont, QFontDatabase, QIcon, QKeySequence, QPainter, QPen,
-    QShortcut,
+    QColor, QFont, QFontDatabase, QGuiApplication, QIcon, QImage,
+    QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QSizePolicy, QSpinBox, QToolButton, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QSpinBox, QStyle, QStyleOption, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 
@@ -78,6 +81,19 @@ def save_json(path: Path, data):
 # ── Themes ───────────────────────────────────────────────────────────────────
 
 THEMES = {
+    # Frosted look. The window background is a translucent dark tint (see
+    # "Glass frosting" below); every accent is white, so session types are
+    # told apart by label. Colours with alpha are #AARRGGBB.
+    "glass": {
+        "bg": "#8c12161c", "surface": "#14ffffff", "surface_light": "#1fffffff",
+        "work": "#ffffff", "work_dim": "#1fffffff",
+        "break": "#ffffff", "break_dim": "#1fffffff",
+        "long_break": "#ffffff", "long_break_dim": "#1fffffff",
+        "text": "#ffffff", "text_dim": "#80ffffff", "text_muted": "#59ffffff",
+        "done": "#59ffffff", "done_text": "#59ffffff",
+        "glass": True, "dialog_bg": "#171b21", "border": "#17ffffff",
+        "minutes": "#73ffffff", "radius": 22,
+    },
     "midnight": {
         "bg": "#1a1a2e", "surface": "#16213e", "surface_light": "#1f3056",
         "work": "#e94560", "work_dim": "#8b2a3a",
@@ -152,7 +168,7 @@ def stylesheet(theme: dict) -> str:
     Qt's stylesheet engine is CSS-like — one place sets every widget's look.
     """
     t = theme
-    return f"""
+    css = f"""
     QWidget {{
         background-color: {t['bg']};
         color: {t['text']};
@@ -331,6 +347,183 @@ def stylesheet(theme: dict) -> str:
     QMenu::item {{ padding: 6px 18px; border-radius: 4px; }}
     QMenu::item:selected {{ background-color: {t['surface_light']}; }}
     """
+    if theme.get("glass"):
+        d = t["dialog_bg"]
+        css += f"""
+    /* Glass: the main window paints its own frosted tint, so widgets are
+       see-through; dialogs and popups stay solid. */
+    QWidget {{ background-color: transparent; }}
+    QDialog, QMenu, QToolTip, QComboBox QAbstractItemView {{
+        background-color: {d}; color: {t['text']};
+    }}
+    QPushButton:hover {{ background-color: transparent; color: {t['text']}; }}
+    QPushButton#chip {{
+        color: {t['text_dim']}; border: none; border-radius: 0px;
+        padding: 4px 6px; font-size: {fs(8)}; font-weight: 600;
+    }}
+    QPushButton#chip:hover {{
+        color: {t['text']}; border: none; background-color: transparent;
+    }}
+    QPushButton#primary, QPushButton#breakPrimary, QPushButton#longPrimary {{
+        background-color: {t['surface_light']}; color: {t['text']};
+        border: none; border-radius: 22px;
+    }}
+    QPushButton#primary:hover, QPushButton#breakPrimary:hover,
+    QPushButton#longPrimary:hover {{
+        background-color: #33ffffff; color: {t['text']};
+    }}
+    QPushButton#iconControl {{ color: {t['text_dim']}; }}
+    QPushButton#iconControl:hover {{
+        background-color: transparent; color: {t['text']};
+    }}
+    QPushButton#icon:hover {{ background-color: transparent; }}
+    QToolButton#icon {{ border: none; color: {t['text_dim']}; }}
+    QToolButton#icon:hover {{ color: {t['text']}; }}
+    QPushButton#rowChip:hover {{
+        background-color: transparent; color: {t['text']};
+    }}
+    QListWidget::item, QListWidget::item:selected {{
+        background-color: transparent; margin: 0px;
+    }}
+    QWidget#sessionRowCurrent, QWidget#sessionRow {{
+        background-color: transparent;
+    }}
+    QLabel#title {{
+        font-size: {fs(8)}; font-weight: 600; color: {t['text_dim']};
+    }}
+    QLabel#muted {{
+        font-size: {fs(8)}; font-weight: 600; color: {t['text_dim']};
+    }}
+    QFrame#hairline {{ background-color: transparent; }}
+    QPushButton#addRow {{
+        color: {t['text_muted']}; border: none; padding: 9px 0px;
+        font-size: {fs(11)}; font-weight: 300;
+    }}
+    QPushButton#addRow:hover {{
+        color: {t['text_dim']}; border: none; background-color: transparent;
+    }}
+    QFrame#card, QFrame#bar {{ background-color: {t['surface']}; }}
+    QFrame#popupCard {{ background-color: {t['surface']}; }}
+    QLineEdit, QSpinBox, QComboBox {{ background-color: {t['surface']}; }}
+    QCheckBox::indicator {{ background-color: {t['surface']}; }}
+    QCheckBox::indicator:checked {{ background-color: {t['work_dim']}; }}
+    """
+    return css
+
+
+# ── Glass frosting ───────────────────────────────────────────────────────────
+#
+# Three ways to get a frosted window, picked once per window (see
+# PomoWindow._apply_frost):
+#   "compositor"  X11 with a compositor: translucent window, the compositor
+#                 blurs what is behind it.
+#   "wayland"     Wayland: translucent window, the compositor decides on blur.
+#   "fake"        anything else (X11 without a compositor, offscreen): draw
+#                 the feh wallpaper, blurred, under the tint.
+
+_FEHBG_RE = re.compile(
+    r"--bg-(?:fill|scale|center|max)\s+(?:'([^']*)'|\"([^\"]*)\"|(\S+))")
+_BLUR_SCALE = 12
+_FALLBACK_BG = "#11151b"
+_wallpaper_cache: dict = {}
+
+
+def compositor_running() -> bool:
+    """True when a compositor owns the _NET_WM_CM_S0 selection (X11 only).
+
+    Any failure — no libX11, no display — counts as "no compositor".
+    """
+    try:
+        x11 = ctypes.CDLL("libX11.so.6")
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XInternAtom.restype = ctypes.c_ulong
+        x11.XInternAtom.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        x11.XGetSelectionOwner.restype = ctypes.c_ulong
+        x11.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        dpy = x11.XOpenDisplay(None)
+        if not dpy:
+            return False
+        try:
+            atom = x11.XInternAtom(dpy, b"_NET_WM_CM_S0", False)
+            return bool(x11.XGetSelectionOwner(dpy, atom) != 0)
+        finally:
+            x11.XCloseDisplay(dpy)
+    except Exception:
+        return False
+
+
+def frost_mode() -> str:
+    """Pick "compositor", "wayland" or "fake" for the current platform."""
+    platform = QGuiApplication.platformName()
+    if platform == "xcb" and compositor_running():
+        return "compositor"
+    if platform.startswith("wayland"):
+        return "wayland"
+    return "fake"
+
+
+def parse_fehbg(text: str):
+    """Wallpaper path from the contents of a ~/.fehbg script, or None."""
+    m = _FEHBG_RE.search(text)
+    if not m:
+        return None
+    path = next((g for g in m.groups() if g), None)
+    return os.path.expanduser(path) if path else None
+
+
+def _blurred_wallpaper(size: QSize):
+    """Blurred, aspect-filled wallpaper for a screen of `size`, or None.
+
+    Cached per screen size; None (cached too) means paint the solid fallback.
+    """
+    key = (size.width(), size.height())
+    if key in _wallpaper_cache:
+        return _wallpaper_cache[key]
+    pix = None
+    try:
+        text = (Path.home() / ".fehbg").read_text()
+    except OSError:
+        text = ""
+    path = parse_fehbg(text)
+    img = QImage(path) if path else QImage()
+    if not img.isNull() and size.width() > 0 and size.height() > 0:
+        # Aspect-fill, centred crop — what `feh --bg-fill` does.
+        img = img.scaled(size, Qt.KeepAspectRatioByExpanding,
+                         Qt.SmoothTransformation)
+        img = img.copy((img.width() - size.width()) // 2,
+                       (img.height() - size.height()) // 2,
+                       size.width(), size.height())
+        small = QSize(max(1, size.width() // _BLUR_SCALE),
+                      max(1, size.height() // _BLUR_SCALE))
+        for _ in range(2):
+            img = img.scaled(small, Qt.IgnoreAspectRatio,
+                             Qt.SmoothTransformation)
+            img = img.scaled(size, Qt.IgnoreAspectRatio,
+                             Qt.SmoothTransformation)
+        pix = QPixmap.fromImage(img)
+    _wallpaper_cache[key] = pix
+    return pix
+
+
+class Central(QWidget):
+    """Central widget. Paints the glass tint when the theme asks for it."""
+
+    def __init__(self, win: "PomoWindow"):
+        super().__init__()
+        self._win = win
+        self.setAttribute(Qt.WA_StyledBackground, True)
+
+    def paintEvent(self, event):
+        if self._win.paint_glass(self):
+            return
+        # Solid themes: the stylesheet background, as for any plain QWidget.
+        opt = QStyleOption()
+        opt.initFrom(self)
+        p = QPainter(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, opt, p, self)
 
 
 # ── Sounds ───────────────────────────────────────────────────────────────────
@@ -475,6 +668,7 @@ class RingTimer(QWidget):
         self._dim = QColor("#8b2a3a")
         self._text_color = QColor("#eaeaea")
         self._text_dim = QColor("#8892a0")
+        self._glass = False
 
     def set_state(self, progress, time_text, label, color, dim,
                   text, text_dim):
@@ -492,9 +686,59 @@ class RingTimer(QWidget):
             self.clicked.emit()
         super().mousePressEvent(event)
 
+    def set_glass(self, glass: bool):
+        self._glass = glass
+        self.update()
+
+    def _paint_glass(self, p: QPainter):
+        """Thin ring, small-caps label above light tabular digits."""
+        size = min(self.width(), self.height())
+        ring_w = max(2, size // 48)
+        cx, cy = self.width() / 2, self.height() / 2
+        r = max(8, (size / 2) - ring_w - 4)
+        rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+
+        p.setPen(QPen(self._dim, ring_w, Qt.SolidLine, Qt.FlatCap))
+        p.drawEllipse(rect)
+        if self._progress > 0.001:
+            p.setPen(QPen(self._color, ring_w, Qt.SolidLine, Qt.RoundCap))
+            p.drawArc(rect, 90 * 16, -int(360 * self._progress * 16))
+
+        time_size = max(8, int(size * 0.24))
+        f = QFont(self.font())
+        f.setPixelSize(time_size)
+        f.setWeight(QFont.Light)
+        f.setLetterSpacing(QFont.PercentageSpacing, 98)
+        try:  # tabular figures, Qt >= 6.7; harmless where the font lacks them
+            f.setFeature(QFont.Tag("tnum"), 1)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        p.setFont(f)
+        p.setPen(self._text_color)
+        p.drawText(QRect(0, int(cy - time_size * 0.5), self.width(),
+                         int(time_size * 1.2)),
+                   Qt.AlignHCenter | Qt.AlignVCenter, self._time_text)
+
+        if size >= 130:
+            label_size = max(7, int(size * 0.058))
+            lf = QFont(self.font())
+            lf.setPixelSize(label_size)
+            lf.setWeight(QFont.DemiBold)
+            lf.setCapitalization(QFont.AllUppercase)
+            lf.setLetterSpacing(QFont.AbsoluteSpacing,
+                                max(1.0, label_size * 0.18))
+            p.setFont(lf)
+            p.setPen(self._text_dim)
+            p.drawText(QRect(0, int(cy - time_size * 0.5 - label_size * 2.2),
+                             self.width(), int(label_size * 2)),
+                       Qt.AlignHCenter | Qt.AlignBottom, self._label)
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if self._glass:
+            self._paint_glass(p)
+            return
         size = min(self.width(), self.height())
         ring_w = max(2, size // 28)
         cx, cy = self.width() / 2, self.height() / 2
@@ -565,6 +809,10 @@ class SessionRow(QWidget):
                   else t["long_break"])
         muted = t["text_muted"]
         text_color = t["done_text"] if session.done else t["text"]
+
+        if t.get("glass"):
+            self._init_glass(t, is_current)
+            return
 
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 3, 6, 3)
@@ -651,6 +899,85 @@ class SessionRow(QWidget):
         delete.setToolTip("Remove")
         delete.clicked.connect(lambda: self.app._remove(self.index))
         h.addWidget(delete)
+
+    def _init_glass(self, t: dict, is_current: bool):
+        """Glass row: dot, light name, minutes at the right. The ±/× chips
+        keep their actions but only show while the pointer is on the row."""
+        session = self.session
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 5, 0, 5)
+        h.setSpacing(10)
+
+        # A 16px halo cell holding an 8px dot: the current row's dot is
+        # white inside a faint ring, the others a dim dot.
+        halo = QFrame()
+        halo.setFixedSize(16, 16)
+        halo.setStyleSheet(
+            f"background: {t['surface_light'] if is_current else 'transparent'};"
+            "border: none; border-radius: 8px;")
+        hl = QHBoxLayout(halo)
+        hl.setContentsMargins(4, 4, 4, 4)
+        dot = QFrame()
+        dot.setStyleSheet(
+            f"background: {t['text'] if is_current else t['text_muted']};"
+            "border: none; border-radius: 4px;")
+        hl.addWidget(dot)
+        h.addWidget(halo)
+
+        self.name_lbl = QLabel(session.name)
+        self.name_lbl.setStyleSheet(
+            f"color: {t['done_text'] if session.done else t['text']}; "
+            f"font-size: {fs(11)}; font-weight: 300; background: transparent;")
+        self.name_lbl.setCursor(Qt.IBeamCursor)
+        self.name_lbl.mouseDoubleClickEvent = (
+            lambda _e: self.app._rename_index(self.index))
+        h.addWidget(self.name_lbl, 1)
+
+        self._chips = []
+        for glyph, tip, action in (
+                ("−", None, lambda: self.app._adjust_duration(self.index, -1)),
+                ("+", None, lambda: self.app._adjust_duration(self.index, +1))):
+            chip = QPushButton(glyph)
+            chip.setObjectName("rowChip")
+            chip.setFixedSize(18, 18)
+            chip.setFlat(True)
+            chip.clicked.connect(action)
+            self._chips.append(chip)
+
+        self.dur_lbl = QLabel(f"{session.duration}m")
+        self.dur_lbl.setStyleSheet(
+            f"color: {t['minutes']}; font-size: {fs(10)}; "
+            "background: transparent;")
+        self.dur_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.dur_lbl.setCursor(Qt.PointingHandCursor)
+        self.dur_lbl.mouseDoubleClickEvent = (
+            lambda _e: self.app._prompt_duration(self.index))
+
+        delete = QPushButton("×")
+        delete.setObjectName("rowChip")
+        delete.setFixedSize(18, 18)
+        delete.setFlat(True)
+        delete.setToolTip("Remove")
+        delete.clicked.connect(lambda: self.app._remove(self.index))
+        self._chips.append(delete)
+
+        h.addWidget(self._chips[0])
+        h.addWidget(self.dur_lbl)
+        h.addWidget(self._chips[1])
+        h.addWidget(delete)
+        self._show_chips(False)
+
+    def _show_chips(self, shown: bool):
+        for chip in getattr(self, "_chips", ()):
+            chip.setVisible(shown)
+
+    def enterEvent(self, event):
+        self._show_chips(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._show_chips(False)
+        super().leaveEvent(event)
 
 
 # ── Add session popup ───────────────────────────────────────────────────────
@@ -935,9 +1262,9 @@ class PomoWindow(QMainWindow):
             "short": int(prefs.get("pattern_short", 3)),
             "long": int(prefs.get("pattern_long", 1)),
         }
-        self.theme_name = prefs.get("theme", "midnight")
+        self.theme_name = prefs.get("theme", "glass")
         if self.theme_name not in THEMES:
-            self.theme_name = "midnight"
+            self.theme_name = "glass"
         self.chain_auto_start = bool(prefs.get("chain_auto_start", False))
         self.auto_start_breaks = bool(prefs.get("auto_start_breaks", True))
         self.sounds_enabled = bool(prefs.get("sounds_enabled", True))
@@ -1028,9 +1355,9 @@ class PomoWindow(QMainWindow):
     # ── UI build ─────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        central = QWidget()
+        central = Central(self)
         self.setCentralWidget(central)
-        root = QVBoxLayout(central)
+        root = self._root = QVBoxLayout(central)
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
 
@@ -1044,6 +1371,9 @@ class PomoWindow(QMainWindow):
         title.setObjectName("title")
         top.addWidget(title)
         top.addStretch()
+        # Empty except in glass, where the header chips live up here.
+        self._top_chips = QHBoxLayout()
+        top.addLayout(self._top_chips)
 
         self.settings_btn = QToolButton()
         self.settings_btn.setText("⚙")
@@ -1059,6 +1389,8 @@ class PomoWindow(QMainWindow):
         sep.setObjectName("hairline")
         sep.setFixedHeight(1)
         root.addWidget(sep)
+        self._hairline = sep
+        self._top = top
 
         # Body: ring + controls on the left, sessions on the right.
         body = QHBoxLayout()
@@ -1106,12 +1438,10 @@ class PomoWindow(QMainWindow):
         push_pat.clicked.connect(
             lambda: self._open_pattern_popup(push_pat))
 
-        # Spread the four controls evenly across the bar: a stretch between
-        # each (flush to both edges, equal gaps) rather than two clusters.
-        for i, btn in enumerate((restart, clear, templates, push_pat)):
-            if i:
-                head.addStretch()
-            head.addWidget(btn)
+        # _arrange_chrome places the four controls: spread evenly across
+        # this bar, or (glass) packed into the top bar.
+        self._chips = (restart, clear, templates, push_pat)
+        self._panel_head = head
         v.addLayout(head)
 
         total = QLabel(""); total.setObjectName("muted")
@@ -1142,7 +1472,7 @@ class PomoWindow(QMainWindow):
         return wrap, lst, total
 
     def _build_controls_row(self):
-        row = QHBoxLayout()
+        row = self._ctl_row = QHBoxLayout()
         row.setSpacing(6)
 
         # Icon-only controls. Glyphs come from the Unicode media-control
@@ -1163,6 +1493,7 @@ class PomoWindow(QMainWindow):
         reset.setToolTip("Reset (R)")
         reset.setFixedSize(34, 32)
         reset.clicked.connect(self.reset_timer)
+        self._reset_btn = reset
         row.addWidget(reset)
 
         skip = QPushButton("⏭")
@@ -1170,6 +1501,7 @@ class PomoWindow(QMainWindow):
         skip.setToolTip("Skip (S)")
         skip.setFixedSize(34, 32)
         skip.clicked.connect(self.skip_session)
+        self._skip_btn = skip
         row.addWidget(skip)
 
         row.addStretch()
@@ -1181,9 +1513,120 @@ class PomoWindow(QMainWindow):
         if name not in THEMES:
             return
         self.theme_name = name
+        self._apply_frost()
         QApplication.instance().setStyleSheet(stylesheet(THEMES[name]))
+        self._arrange_chrome()
         self._persist_prefs()
         self._refresh_all()
+        self.centralWidget().update()
+
+    def _is_glass(self) -> bool:
+        return bool(THEMES[self.theme_name].get("glass"))
+
+    def _apply_frost(self):
+        """Decide translucency for the current theme.
+
+        WA_TranslucentBackground only takes effect when set before the
+        window is first shown, so it is applied at start. After that a theme
+        switch only changes the painting: glass picked later paints the faked
+        (opaque) frosting, and the attribute stays as it was.
+        """
+        if self.isVisible():
+            return
+        translucent = (self._is_glass()
+                       and frost_mode() in ("compositor", "wayland"))
+        self.setAttribute(Qt.WA_TranslucentBackground, translucent)
+
+    def paint_glass(self, widget: QWidget) -> bool:
+        """Paint the frosted tint on the central widget. False when the
+        current theme is not glass (the caller paints the solid look)."""
+        if not self._is_glass():
+            return False
+        t = THEMES[self.theme_name]
+        translucent = self.testAttribute(Qt.WA_TranslucentBackground)
+        radius = t["radius"] if translucent else 0
+        rect = QRectF(widget.rect())
+        p = QPainter(widget)
+        p.setRenderHint(QPainter.Antialiasing)
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, radius, radius)
+        p.setClipPath(clip)
+        if not translucent:
+            # Nothing to see through: fake it with the blurred wallpaper.
+            screen = self.screen()
+            pix = _blurred_wallpaper(screen.size()) if screen else None
+            if pix is not None:
+                origin = (widget.mapToGlobal(QPoint(0, 0))
+                          - screen.geometry().topLeft())
+                p.drawPixmap(QPoint(0, 0), pix,
+                             QRect(origin, widget.size()))
+            else:
+                p.fillRect(rect, QColor(_FALLBACK_BG))
+        p.fillRect(rect, QColor(t["bg"]))
+        p.setClipping(False)
+        p.setPen(QPen(QColor(t["border"]), 1))
+        p.setBrush(Qt.NoBrush)
+        edge = QPainterPath()
+        edge.addRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5),
+                            max(0, radius - 0.5), max(0, radius - 0.5))
+        p.drawPath(edge)
+        p.end()
+        return True
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        central = self.centralWidget()
+        if (central is not None and self._is_glass()
+                and not self.testAttribute(Qt.WA_TranslucentBackground)):
+            central.update()
+
+    def _arrange_chrome(self):
+        """Layout and type details that differ between glass and the rest."""
+        glass = self._is_glass()
+        for lay in (self._panel_head, self._top_chips, self._ctl_row):
+            while lay.count():
+                lay.takeAt(0)
+
+        if glass:
+            for btn in self._chips:
+                self._top_chips.addWidget(btn)
+            self._top_chips.setSpacing(10)
+            self._top_chips.setContentsMargins(0, 0, 12, 0)
+            self._ctl_row.setSpacing(22)
+            self._ctl_row.addStretch()
+            for w in (self._reset_btn, self.start_btn, self._skip_btn):
+                self._ctl_row.addWidget(w)
+            self._ctl_row.addStretch()
+            self.start_btn.setFixedSize(44, 44)
+            self._root.setContentsMargins(22, 18, 22, 16)
+            self._root.setSpacing(8)
+        else:
+            for i, btn in enumerate(self._chips):
+                if i:
+                    self._panel_head.addStretch()
+                self._panel_head.addWidget(btn)
+            self._ctl_row.setSpacing(6)
+            for w in (self.start_btn, self._reset_btn, self._skip_btn):
+                self._ctl_row.addWidget(w)
+            self._ctl_row.addStretch()
+            self.start_btn.setFixedSize(56, 32)
+            self._root.setContentsMargins(10, 8, 10, 8)
+            self._root.setSpacing(6)
+
+        self.title_dot.setVisible(not glass)
+        self._hairline.setVisible(not glass)
+        self.total_label.setVisible(not glass)
+        self.ring.set_glass(glass)
+        for w in (*self._chips, self.today_label,
+                  self.findChild(QLabel, "title")):
+            f = w.font()
+            f.setCapitalization(QFont.AllUppercase if glass
+                                else QFont.MixedCase)
+            if glass:
+                f.setLetterSpacing(QFont.AbsoluteSpacing, 2.0 * UI_SCALE)
+            else:
+                f.setLetterSpacing(QFont.PercentageSpacing, 100)
+            w.setFont(f)
 
     # ── Settings dialog ──────────────────────────────────────────────────
 
@@ -1612,9 +2055,14 @@ class PomoWindow(QMainWindow):
         minutes = int(td["minutes"])
         hrs, mins = divmod(minutes, 60)
         time_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
-        self.today_label.setText(
-            f"Today:  {sessions} session{'s' if sessions != 1 else ''}  ·  "
-            f"{time_str} focused")
+        plural = "s" if sessions != 1 else ""
+        if self._is_glass():
+            self.today_label.setText(
+                f"Today · {sessions} session{plural} · {time_str} focused")
+        else:
+            self.today_label.setText(
+                f"Today:  {sessions} session{plural}  ·  "
+                f"{time_str} focused")
 
     def _refresh_all(self):
         self._refresh_display()
