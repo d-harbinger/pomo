@@ -2,7 +2,7 @@
 # Launch Pomo timer
 cd "$(dirname "$0")"
 
-VENV="venv-$(hostname)"
+VENV="venv-$(uname -n)"
 
 if [ ! -d "$VENV" ]; then
     echo "Creating virtual environment ($VENV)..."

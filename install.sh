@@ -25,7 +25,7 @@ venv_works() {
 if venv_works "$APP_DIR/venv"; then
     VENV="$APP_DIR/venv"
 else
-    VENV="$APP_DIR/venv-$(hostname)"
+    VENV="$APP_DIR/venv-$(uname -n)"
 fi
 
 if ! venv_works "$VENV"; then
