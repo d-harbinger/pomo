@@ -54,8 +54,7 @@ class GlassTests(unittest.TestCase):
         self.assertNotIn("{t[", css)
 
     def test_saved_theme_key_is_ignored(self):
-        # Split so a grep for the removed theme names stays empty.
-        legacy = "em" + "ber"
+        legacy = "ember"
         pomo_qt.save_json(pomo_qt.PREFS_FILE, {"theme": legacy})
         win = pomo_qt.PomoWindow()
         self.assertEqual([k for k in vars(win) if "theme" in k], [])
