@@ -623,7 +623,9 @@ class RingTimer(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         size = min(self.width(), self.height())
-        ring_w = max(2, size // 48)
+        # Thin at every size: a full-screen window would otherwise draw it
+        # as a heavy band.
+        ring_w = max(2, min(5, size // 48))
         cx, cy = self.width() / 2, self.height() / 2
         r = max(8, (size / 2) - ring_w - 4)
         rect = QRectF(cx - r, cy - r, 2 * r, 2 * r)
