@@ -22,7 +22,7 @@ saved templates, custom chimes. One PySide6 application, one file.
 |---|---|
 | Launch | `./run.sh` — creates `venv-<hostname>` on first run, installs `requirements.txt`, starts the app |
 | Install as a desktop app | `bash install.sh` — syncs the venv, generates the icon, writes `~/.local/share/applications/pomo.desktop` |
-| Tests | `"venv-$(uname -n)/bin/python" -m unittest discover tests` — the venv `run.sh` or `install.sh` built, named for the host it runs on |
+| Tests | `"venv-$(uname -n)/bin/python" -m unittest discover tests` — the venv `run.sh` or `install.sh` built for the machine running the tests |
 
 The tests run headless: the module sets `POMO_DATA_DIR` to a temp directory
 and `QT_QPA_PLATFORM=offscreen` **before** importing the app, so real
