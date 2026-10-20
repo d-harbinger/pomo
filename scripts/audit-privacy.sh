@@ -6,6 +6,7 @@
 # Usage:
 #   bash scripts/audit-privacy.sh         — scans full history
 #   bash scripts/audit-privacy.sh HEAD~5  — scans only the last 5 commits
+#   bash scripts/audit-privacy.sh --explain — on a finding, print the rewrite recipes
 #
 # Exit code 0 = clean, 1 = matches found. Output is the commit SHA + file
 # + matching lines, so you can decide whether each hit is a real leak or
@@ -49,7 +50,14 @@ fi
 ALL_PATTERNS=("${BUILTIN_PATTERNS[@]}" "${EXTRA_PATTERNS[@]}")
 
 # Default range = entire history. Caller may pass a narrower revision range.
-range="${1:-}"
+range=""
+EXPLAIN=0
+for arg in "$@"; do
+  case "$arg" in
+    --explain) EXPLAIN=1 ;;
+    *) range="$arg" ;;
+  esac
+done
 
 EXCLUDE_PATHS=( "${PG_EXCLUDE_PATHS[@]}" )
 
@@ -183,7 +191,7 @@ for pat in "${ALL_PATTERNS[@]}"; do
       if [ -n "$current_matches" ]; then
         echo "${YELLOW}  also in history:${RESET}"
       else
-        echo "${YELLOW}  in history only (fix: git filter-branch + force-push):${RESET}"
+        echo "${YELLOW}  in history only (fix: a history rewrite, see below):${RESET}"
       fi
       printf '%s\n' "$history_matches" | head -10 | sed 's/^/    /'
     fi
@@ -220,6 +228,11 @@ if [ "$hits" -eq 0 ]; then
   exit 0
 else
   echo "${RED}audit-privacy: ${hits} issue(s) found. Review above.${RESET}"
+  if [ "$EXPLAIN" -eq 0 ]; then
+    echo "  A value in the working tree is fixed by editing the file and committing."
+    echo "  A value in history needs a git-filter-repo rewrite: rerun with --explain for the recipes."
+    exit 1
+  fi
   echo "  pip install --user git-filter-repo   # both recipes need it"
   echo ""
   echo "  Pick the recipe by WHERE the value is. The two are not interchangeable:"
@@ -228,14 +241,14 @@ else
   echo ""
   echo "  1. In FILE CONTENTS or a COMMIT MESSAGE — check with:"
   echo "       git log -S'OFFENDING_STRING' --oneline"
-  echo "     echo 'OFFENDING_STRING==>[redacted]' > /tmp/scrub.txt"
-  echo "     ~/.local/bin/git-filter-repo --replace-text /tmp/scrub.txt --replace-message /tmp/scrub.txt --force"
+  echo "     scrub=\$(mktemp); echo 'OFFENDING_STRING==>[redacted]' > \"\$scrub\""
+  echo "     ~/.local/bin/git-filter-repo --replace-text \"\$scrub\" --replace-message \"\$scrub\" --force"
   echo ""
   echo "  2. In AUTHOR or COMMITTER identity (a name or an address attached to the"
   echo "     commit itself, which no grep over tracked files will ever show) — check with:"
   echo "       git log --format='%an <%ae>' | sort -u"
-  echo "     printf 'Name <good@address> <leaked@address>\\n' > /tmp/mailmap.txt"
-  echo "     ~/.local/bin/git-filter-repo --mailmap /tmp/mailmap.txt --force"
+  echo "     map=\$(mktemp); printf 'Name <good@address> <leaked@address>\\n' > \"\$map\""
+  echo "     ~/.local/bin/git-filter-repo --mailmap \"\$map\" --force"
   echo ""
   echo "  Then, for either: re-add the origin remote (filter-repo strips it) and force-push."
   echo "  Before that: 'git bundle create <repo>.bundle --all' is a complete, restorable backup."
