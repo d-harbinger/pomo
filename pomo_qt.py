@@ -1791,6 +1791,9 @@ class TemplatesDialog(QDialog):
             summary = QLabel(
                 self._summarize(slot["sessions"]) if slot else "empty")
             summary.setObjectName("muted")
+            # Never narrower than its text: a saved slot's four buttons
+            # otherwise squeeze "1 focus · 0 breaks" into a clipped word.
+            summary.setMinimumWidth(summary.sizeHint().width())
             row.addWidget(summary, 1)
 
             save_btn = QPushButton("Save current")

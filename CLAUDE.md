@@ -31,10 +31,12 @@ new test file — the app reads its data directory at import.
 
 ## Verification boundary
 
-Everything except those headless tests is host-verified. This environment
-has no display, so no change to layout, animation, theming, DPI behaviour,
-or sound can be claimed as working from here. Say what was run and leave
-the visual check to the owner.
+The headless tests run anywhere. Layout, theming and dialog flows also need
+the real window: on a machine with a desktop session, start the app with a
+throwaway `POMO_DATA_DIR`, drive it (`wtype` for keys, `grim` for shots on
+Wayland) and read the screenshots. Where no session exists, say what was
+run and leave the visual check to the owner. Sound and DPI behaviour on
+other screens stay the owner's check.
 
 ## Gotchas
 
