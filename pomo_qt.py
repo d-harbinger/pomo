@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
-"""Pomo (Qt) — PySide6 port of the pomodoro timer.
+"""Pomo — a pomodoro focus timer for the Linux desktop, in PySide6.
 
-First cut focused on showing what the toolkit gets us:
-  - Real font rendering, real DPI, real animations.
-  - Stylesheet-based theming (no manual color math).
-  - Settings dialog instead of cluttered top bar.
-  - Animated cross-fade between mode swaps.
-  - Reuses the existing JSON files in $POMO_DATA_DIR (or ~/.local/share/pomo)
-    so templates/sessions/stats/prefs round-trip with the Tk version.
+Data lives in JSON files under $POMO_DATA_DIR (default ~/.local/share/pomo).
 """
 
 from __future__ import annotations
