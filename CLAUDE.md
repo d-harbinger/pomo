@@ -14,7 +14,7 @@ saved templates, custom chimes. One PySide6 application, one file.
   `~/.local/share/pomo` — `stats.json`, `history.json`, `prefs.json`,
   `sessions.json`, `templates.json` (`pomo_qt.py` resolves the directory
   once, at import time).
-- **No README.** This file and the audit record below are the entry points.
+- **`README.md` is the user-facing entry point;** this file holds the maintainer notes.
 
 ## Run, install, test
 
