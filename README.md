@@ -6,7 +6,7 @@ pomo is a pomodoro focus timer for the Linux desktop. The user builds a queue of
 
 - A Linux desktop session (X11 or Wayland).
 - Python 3 with the `venv` module and `pip`. Debian and Ubuntu ship the module separately as `python3-venv`; Arch includes it in `python`.
-- The system libraries the PySide6 wheels link against. A normal desktop has them. On a minimal system the import fails until `libGL.so.1`, `libxkbcommon.so.0`, `libfontconfig.so.1` and `libfreetype.so.6` are present (Arch packages `libglvnd`, `libxkbcommon`, `fontconfig`). The Qt X11 plugin also links the `libxcb-*` helper libraries, `libxkbcommon-x11` among them (Arch packages `xcb-util-cursor`, `xcb-util-image`, `xcb-util-keysyms`, `xcb-util-renderutil`, `xcb-util-wm`, `libxkbcommon-x11`).
+- The system libraries the PySide6 wheels link against. A normal desktop has them. On a minimal system the import fails until `libGL.so.1`, `libxkbcommon.so.0`, `libfontconfig.so.1` and `libfreetype.so.6` are present (Arch packages `libglvnd`, `libxkbcommon`, `fontconfig`). It also needs at least one font installed, or every label draws as empty boxes: any common sans font works (Arch `ttf-dejavu`, Debian and Ubuntu `fonts-dejavu-core`). The Qt X11 plugin also links the `libxcb-*` helper libraries, `libxkbcommon-x11` among them (Arch packages `xcb-util-cursor`, `xcb-util-image`, `xcb-util-keysyms`, `xcb-util-renderutil`, `xcb-util-wm`, `libxkbcommon-x11`).
 - Internet access on first run, so `pip` can fetch PySide6 and Pillow.
 - Optional: a sound player (`paplay`, `aplay` or `play`) for the chimes and `notify-send` for desktop notifications. Without them the timer works and stays silent.
 

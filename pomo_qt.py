@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QFont, QGuiApplication, QIcon, QImage,
+    QColor, QFont, QFontMetricsF, QGuiApplication, QIcon, QImage,
     QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -346,8 +346,9 @@ def stylesheet() -> str:
 
 # ── Glass frosting ───────────────────────────────────────────────────────────
 #
-# Three ways to get a frosted window, picked once per window (see
-# PomoWindow._apply_frost):
+# Three ways to get a frosted window, picked once, for the main window (see
+# PomoWindow._apply_frost); every popup, dialog and menu copies that answer
+# (match_frost) and is translucent only when the main window is:
 #   "compositor"  X11 with a compositor: translucent window, the compositor
 #                 blurs what is behind it.
 #   "wayland"     Wayland: translucent window, the compositor decides on blur.
@@ -396,6 +397,51 @@ def frost_mode() -> str:
     if platform.startswith("wayland"):
         return "wayland"
     return "fake"
+
+
+def match_frost(window: QWidget, source: QWidget) -> QWidget:
+    """Give a top-level window the main window's frosting decision.
+
+    frost_mode() is asked once, by PomoWindow._apply_frost; every popup,
+    dialog and menu copies the answer from the window that opens it (which
+    copied it from the main window). Translucent only when the main window
+    is; otherwise opaque, filled with the stylesheet's THEME["dialog_bg"].
+    Call before the window is first shown, like _apply_frost.
+    """
+    translucent = source.window().testAttribute(Qt.WA_TranslucentBackground)
+    window.setAttribute(Qt.WA_TranslucentBackground, translucent)
+    window.setAutoFillBackground(not translucent)
+    return window
+
+
+def ask_text(parent: QWidget, title: str, label: str, text: str = ""):
+    """QInputDialog.getText, frosted like its parent. Returns (text, ok)."""
+    dlg = match_frost(QInputDialog(parent), parent)
+    dlg.setWindowTitle(title)
+    dlg.setLabelText(label)
+    dlg.setTextValue(text)
+    ok = dlg.exec() == QDialog.Accepted
+    return dlg.textValue(), ok
+
+
+def ask_int(parent: QWidget, title: str, label: str, value: int,
+            low: int, high: int):
+    """QInputDialog.getInt, frosted like its parent. Returns (value, ok)."""
+    dlg = match_frost(QInputDialog(parent), parent)
+    dlg.setWindowTitle(title)
+    dlg.setLabelText(label)
+    dlg.setInputMode(QInputDialog.IntInput)
+    dlg.setIntRange(low, high)
+    dlg.setIntValue(value)
+    ok = dlg.exec() == QDialog.Accepted
+    return dlg.intValue(), ok
+
+
+def tell(parent: QWidget, title: str, text: str):
+    """QMessageBox.information, frosted like its parent."""
+    box = QMessageBox(QMessageBox.Information, title, text,
+                      QMessageBox.Ok, parent)
+    match_frost(box, parent).exec()
 
 
 def parse_fehbg(text: str):
@@ -759,6 +805,61 @@ class SessionRow(QWidget):
         super().leaveEvent(event)
 
 
+# ── Control buttons ─────────────────────────────────────────────────────────
+
+class ShapeButton(QPushButton):
+    """A control button that shows a text glyph or a painted shape.
+
+    `set_glyph("pause")` and `set_glyph("skip")` paint the shape with
+    QPainter, so it renders whatever fonts the system has; any other value
+    is shown as ordinary button text. The stylesheet still draws the
+    button itself; the shape takes the colours the stylesheet gives the
+    button's text (`normal`, and `hover` under the mouse), sized from the
+    button's font so it scales with the UI like the text glyphs do.
+    """
+
+    SHAPES = ("pause", "skip")
+
+    def __init__(self, glyph: str, normal: str, hover: str):
+        super().__init__()
+        self._normal, self._hover = QColor(normal), QColor(hover)
+        self.glyph = ""
+        self.set_glyph(glyph)
+
+    def set_glyph(self, glyph: str):
+        self.glyph = glyph
+        self.setText("" if glyph in self.SHAPES else glyph)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.glyph not in self.SHAPES:
+            return
+        fm = QFontMetricsF(self.font())
+        h = fm.capHeight() or fm.height() * 0.6
+        c = QRectF(self.rect()).center()
+        top = c.y() - h / 2
+        path = QPainterPath()
+        if self.glyph == "pause":
+            bar = gap = h * 0.3
+            path.addRect(QRectF(c.x() - gap / 2 - bar, top, bar, h))
+            path.addRect(QRectF(c.x() + gap / 2, top, bar, h))
+        else:  # skip: a play triangle against a bar, "▶|"
+            tri, bar = h * 0.8, h * 0.2
+            left = c.x() - (tri + bar) / 2
+            path.moveTo(left, top)
+            path.lineTo(left + tri, c.y())
+            path.lineTo(left, top + h)
+            path.closeSubpath()
+            path.addRect(QRectF(left + tri, top, bar, h))
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(self._hover if self.underMouse() else self._normal)
+        p.drawPath(path)
+        p.end()
+
+
 # ── Add session popup ───────────────────────────────────────────────────────
 
 class AddSessionPopup(QDialog):
@@ -775,6 +876,7 @@ class AddSessionPopup(QDialog):
         self.setWindowFlags(
             Qt.Popup | Qt.FramelessWindowHint
             | Qt.NoDropShadowWindowHint)
+        match_frost(self, app)
         self._type = "work"  # default
 
         wrap = QFrame(self)
@@ -824,14 +926,20 @@ class AddSessionPopup(QDialog):
         col.addLayout(name_row)
 
     def _type_button_style(self, color: str, selected: bool) -> str:
+        # Selected takes the glass "on" colours the app already uses: the
+        # surface_light fill of the start button and checked checkboxes,
+        # with full-strength text. The accent stays on the border only, so
+        # white accents never fill under white text.
+        t = THEME
         if selected:
             return (
-                f"background-color: {color}; color: white; "
+                f"background-color: {t['surface_light']}; "
+                f"color: {t['text']}; border: 1px solid {color}; "
                 "border-radius: 3px; padding: 4px 10px; "
                 f"font-weight: 600; font-size: {fs(9)};")
         return (
-            f"background: transparent; color: {color}; "
-            f"border: 1px solid {color}; border-radius: 3px; "
+            f"background: transparent; color: {t['text_dim']}; "
+            f"border: 1px solid {t['surface_light']}; border-radius: 3px; "
             f"padding: 4px 10px; font-weight: 500; font-size: {fs(9)};")
 
     def _select_type(self, key: str):
@@ -873,6 +981,7 @@ class PatternPopup(QDialog):
         self.setWindowFlags(
             Qt.Popup | Qt.FramelessWindowHint
             | Qt.NoDropShadowWindowHint)
+        match_frost(self, app)
         self.setObjectName("popup")
 
         wrap = QFrame(self)
@@ -940,6 +1049,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Pomo Settings")
         self.setMinimumWidth(360)
+        match_frost(self, app)
         self.app = app
 
         layout = QVBoxLayout(self)
@@ -1216,9 +1326,11 @@ class PomoWindow(QMainWindow):
         row = self._ctl_row = QHBoxLayout()
         row.setSpacing(6)
 
-        # Icon-only controls. Glyphs come from the Unicode media-control
-        # block so we don't need bundled SVGs.
-        self.start_btn = QPushButton("▶")
+        # Icon-only controls. ▶ and ↺ are text glyphs every common font has;
+        # pause and skip are painted (ShapeButton) because ⏸ and ⏭ are
+        # missing from DejaVu Sans and other common fonts.
+        t = THEME
+        self.start_btn = ShapeButton("▶", t["text"], t["text"])
         self.start_btn.setObjectName("primary")
         self.start_btn.setToolTip("Start (Space)")
         # Fixed size keeps the button stable when the glyph swaps
@@ -1237,7 +1349,7 @@ class PomoWindow(QMainWindow):
         self._reset_btn = reset
         row.addWidget(reset)
 
-        skip = QPushButton("⏭")
+        skip = ShapeButton("skip", t["text_dim"], t["text"])
         skip.setObjectName("iconControl")
         skip.setToolTip("Skip (S)")
         skip.setFixedSize(34, 32)
@@ -1362,8 +1474,7 @@ class PomoWindow(QMainWindow):
         return self.durations[self.session_type.value] * 60
 
     def prompt_add_focus(self):
-        text, ok = QInputDialog.getText(
-            self, "Add Focus", "What's your intent?")
+        text, ok = ask_text(self, "Add Focus", "What's your intent?")
         if ok and text.strip():
             self.add_focus(text.strip())
 
@@ -1468,7 +1579,7 @@ class PomoWindow(QMainWindow):
         if item is None:
             return
         idx = list_widget.row(item)
-        menu = QMenu(self)
+        menu = match_frost(QMenu(self), self)
         menu.addAction("Rename").triggered.connect(
             lambda: self._rename_index(idx))
         menu.addAction("Delete").triggered.connect(
@@ -1492,8 +1603,7 @@ class PomoWindow(QMainWindow):
         if not (0 <= idx < len(self.sessions)):
             return
         s = self.sessions[idx]
-        val, ok = QInputDialog.getInt(
-            self, "Duration", "Minutes", s.duration, 1, 600)
+        val, ok = ask_int(self, "Duration", "Minutes", s.duration, 1, 600)
         if ok:
             s.duration = val
             if idx == self.current_index:
@@ -1622,15 +1732,15 @@ class PomoWindow(QMainWindow):
 
     def _refresh_buttons(self):
         # Glyph + tooltip swap with state. ▶ for idle/paused (start/resume),
-        # ⏸ for running.
+        # the painted pause shape for running.
         if self.timer_state == TimerState.RUNNING:
-            glyph, tip = "⏸", "Pause (Space)"
+            glyph, tip = "pause", "Pause (Space)"
         elif self.timer_state == TimerState.PAUSED:
             glyph, tip = "▶", "Resume (Space)"
         else:
             glyph, tip = "▶", "Start (Space)"
-        if self.start_btn.text() != glyph:
-            self.start_btn.setText(glyph)
+        if self.start_btn.glyph != glyph:
+            self.start_btn.set_glyph(glyph)
         if self.start_btn.toolTip() != tip:
             self.start_btn.setToolTip(tip)
         names = {
@@ -1704,7 +1814,7 @@ class PomoWindow(QMainWindow):
     def _rename_index(self, idx: int):
         if not (0 <= idx < len(self.sessions)):
             return
-        text, ok = QInputDialog.getText(
+        text, ok = ask_text(
             self, "Rename", "Name", text=self.sessions[idx].name)
         if ok and text.strip():
             self.sessions[idx].name = text.strip()
@@ -1745,6 +1855,7 @@ class TemplatesDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Templates")
         self.setMinimumWidth(420)
+        match_frost(self, app)
         self.app = app
         self._build()
 
@@ -1826,8 +1937,7 @@ class TemplatesDialog(QDialog):
 
     def _save_to(self, slot: int):
         if not self.app.sessions:
-            QMessageBox.information(
-                self, "Empty", "Stack is empty — add a session first.")
+            tell(self, "Empty", "Stack is empty — add a session first.")
             return
         slots = self._load()
         existing_name = (slots[slot]["name"] if slots[slot]
@@ -1838,8 +1948,7 @@ class TemplatesDialog(QDialog):
                        "duration": s.duration})
         slots[slot] = {"name": existing_name, "sessions": ts}
         self._save(slots)
-        QMessageBox.information(
-            self, "Saved", f"Saved to {existing_name}.")
+        tell(self, "Saved", f"Saved to {existing_name}.")
         self._rebuild()
 
     def _load_from(self, slot: int):
@@ -1871,7 +1980,7 @@ class TemplatesDialog(QDialog):
         slots = self._load()
         if not slots[slot]:
             return
-        text, ok = QInputDialog.getText(
+        text, ok = ask_text(
             self, "Rename Template", "Name", text=slots[slot]["name"])
         if ok and text.strip():
             slots[slot]["name"] = text.strip()
