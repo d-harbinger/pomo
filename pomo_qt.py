@@ -259,6 +259,7 @@ def stylesheet() -> str:
         padding: 3px 6px;
         color: {t['text']};
         selection-background-color: {t['work']};
+        selection-color: {t['dialog_bg']};
     }}
     QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{
         border-color: {t['work']};
