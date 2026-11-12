@@ -58,7 +58,7 @@ Exec=$VENV/bin/python $APP_DIR/$SCRIPT
 Icon=pomo
 Terminal=false
 Type=Application
-Categories=Utility;Office;
+Categories=Utility;
 Keywords=pomodoro;timer;focus;productivity;
 StartupWMClass=Pomo
 EOF

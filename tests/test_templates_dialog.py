@@ -21,7 +21,8 @@ from unittest import mock
 # Point the app at a throwaway data dir BEFORE importing it — pomo_qt
 # resolves POMO_DATA_DIR at import time. The offscreen platform lets Qt
 # construct real widgets without a display server.
-_TMP = tempfile.mkdtemp(prefix="pomo-test-")
+_TMPDIR = tempfile.TemporaryDirectory(prefix="pomo-test-")
+_TMP = _TMPDIR.name
 os.environ["POMO_DATA_DIR"] = _TMP
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -32,6 +33,13 @@ from PySide6.QtWidgets import (
 )
 
 import pomo_qt
+
+
+def setUpModule():
+    # Remove the data dir when this module's tests finish. Registered here,
+    # not at import: module cleanups are global, so one registered at import
+    # would run after the first module and delete the other module's dir.
+    unittest.addModuleCleanup(_TMPDIR.cleanup)
 
 
 def _row_button_texts(layout):
@@ -174,6 +182,25 @@ class TemplatesDialogActions(unittest.TestCase):
         bb = dlg.findChildren(QDialogButtonBox)[-1]
         bb.button(QDialogButtonBox.Close).click()
         self.assertEqual(dlg.result(), QDialog.Rejected)
+
+    def test_saved_row_lays_out_at_once(self):
+        # The row that gains Load / Rename / × must widen the open dialog
+        # immediately; it used to keep the old width and overlap its
+        # widgets until the dialog was reopened.
+        dlg = pomo_qt.TemplatesDialog(self.win)
+        dlg.show()
+        self.qapp.processEvents()
+        layout = dlg.layout()
+        _click(layout, 0, "Save current")
+        self.qapp.processEvents()
+        self.assertGreaterEqual(dlg.width(), layout.minimumSize().width())
+        row = layout.itemAt(0).layout()
+        widgets = [row.itemAt(j).widget() for j in range(row.count())]
+        self.assertEqual(len(widgets), 6)
+        for left, right in zip(widgets, widgets[1:]):
+            self.assertLess(left.geometry().right(), right.x(),
+                            f"{left.text()!r} overlaps {right.text()!r}")
+        dlg.close()
 
 
 if __name__ == "__main__":

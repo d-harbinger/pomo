@@ -14,7 +14,8 @@ from pathlib import Path
 # Point the app at a throwaway data dir BEFORE importing it — pomo_qt
 # resolves POMO_DATA_DIR at import time. The offscreen platform lets Qt
 # construct real widgets without a display server.
-_TMP = tempfile.mkdtemp(prefix="pomo-test-")
+_TMPDIR = tempfile.TemporaryDirectory(prefix="pomo-test-")
+_TMP = _TMPDIR.name
 os.environ["POMO_DATA_DIR"] = _TMP
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -27,6 +28,13 @@ from PySide6.QtWidgets import QApplication
 # data directory for the whole run. Importing late lets the other module's
 # directory win, so its fixtures keep working.
 pomo_qt = None
+
+
+def setUpModule():
+    # Remove the data dir when this module's tests finish. Registered here,
+    # not at import: module cleanups are global, so one registered at import
+    # would run after the first module and delete the other module's dir.
+    unittest.addModuleCleanup(_TMPDIR.cleanup)
 
 
 class GlassTests(unittest.TestCase):

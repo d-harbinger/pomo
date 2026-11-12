@@ -24,15 +24,16 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QColor, QFont, QFontMetricsF, QGuiApplication, QIcon, QImage,
+    QColor, QCursor, QFont, QFontMetricsF, QGuiApplication, QIcon, QImage,
     QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDialogButtonBox,
-    QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QSizePolicy, QSpinBox, QToolButton,
-    QVBoxLayout, QWidget,
+    QAbstractSpinBox, QApplication, QCheckBox, QDialog, QDialogButtonBox,
+    QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel, QLayout,
+    QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
+    QMessageBox, QPushButton, QSizePolicy, QSpinBox, QStyle,
+    QStyleOptionButton, QStyleOptionSpinBox, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 
@@ -271,6 +272,21 @@ def stylesheet() -> str:
     }}
     QCheckBox::indicator:checked {{
         background: {t['work']}; border-color: {t['work']};
+    }}
+    /* Styling QSpinBox replaces the native step buttons, arrows included;
+       SpinBox paints the arrows back, so no image is needed. */
+    QSpinBox {{ padding-right: 20px; }}
+    QSpinBox::up-button, QSpinBox::down-button {{
+        subcontrol-origin: border; width: 18px;
+        border: none; background: transparent;
+    }}
+    QSpinBox::up-button {{ subcontrol-position: top right; }}
+    QSpinBox::down-button {{ subcontrol-position: bottom right; }}
+    QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+        background: {t['surface_light']};
+    }}
+    QSpinBox::up-arrow, QSpinBox::down-arrow {{
+        image: none; border: none; width: 0px; height: 0px;
     }}
     QDialog {{ background-color: {t['bg']}; }}
     QMenu {{
@@ -814,6 +830,83 @@ class ShapeButton(QPushButton):
         p.end()
 
 
+class CheckBox(QCheckBox):
+    """A QCheckBox that paints its own check mark.
+
+    The stylesheet styles the indicator box, and a styled indicator draws
+    no mark of its own, so checked and unchecked differed only in shade.
+    This paints the mark over the box with QPainter, like ShapeButton's
+    shapes, in the glass text colour: no icon file, no icon theme.
+    """
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.checkState() != Qt.Checked:
+            return
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        r = QRectF(self.style().subElementRect(
+            QStyle.SE_CheckBoxIndicator, opt, self))
+        path = QPainterPath()
+        path.moveTo(r.left() + r.width() * 0.26, r.top() + r.height() * 0.52)
+        path.lineTo(r.left() + r.width() * 0.43, r.top() + r.height() * 0.69)
+        path.lineTo(r.left() + r.width() * 0.75, r.top() + r.height() * 0.33)
+        pen = QPen(QColor(THEME["text"]), max(1.5, r.width() * 0.12))
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        p.end()
+
+
+class SpinBox(QSpinBox):
+    """A QSpinBox that paints its own step arrows.
+
+    The stylesheet styles the step buttons, and styled buttons lose their
+    arrows (Qt draws no CSS border triangles either), so this paints a small
+    triangle in each button with QPainter, like CheckBox's mark: dim at
+    rest, bright under the mouse, muted when that step is unavailable.
+    """
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        opt = QStyleOptionSpinBox()
+        self.initStyleOption(opt)
+        mouse = self.mapFromGlobal(QCursor.pos())
+        steps = self.stepEnabled()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        for control, flag, up in (
+                (QStyle.SC_SpinBoxUp, QAbstractSpinBox.StepUpEnabled, True),
+                (QStyle.SC_SpinBoxDown, QAbstractSpinBox.StepDownEnabled,
+                 False)):
+            r = QRectF(self.style().subControlRect(
+                QStyle.CC_SpinBox, opt, control, self))
+            if r.isEmpty():
+                continue
+            if not (self.isEnabled() and steps & flag):
+                colour = THEME["text_muted"]
+            elif self.underMouse() and r.contains(mouse.toPointF()):
+                colour = THEME["text"]
+            else:
+                colour = THEME["text_dim"]
+            half = max(3.0, min(r.width(), r.height() * 2) * 0.3)
+            c = r.center()
+            tip, base = (-half / 2, half / 2) if up else (half / 2, -half / 2)
+            path = QPainterPath()
+            path.moveTo(c.x() - half, c.y() + base)
+            path.lineTo(c.x() + half, c.y() + base)
+            path.lineTo(c.x(), c.y() + tip)
+            path.closeSubpath()
+            p.setBrush(QColor(colour))
+            p.drawPath(path)
+        p.end()
+
+
 # ── Add session popup ───────────────────────────────────────────────────────
 
 class AddSessionPopup(QDialog):
@@ -958,7 +1051,7 @@ class PatternPopup(QDialog):
             lbl.setStyleSheet(
                 f"color: {color}; font-weight: 700; font-size: {fs(10)};")
             h.addWidget(lbl)
-            spin = QSpinBox()
+            spin = SpinBox()
             spin.setRange(0, 99)
             spin.setValue(app.pattern_counts[key])
             spin.setFixedWidth(54)
@@ -1010,34 +1103,34 @@ class SettingsDialog(QDialog):
         form.setSpacing(8)
         form.setLabelAlignment(Qt.AlignRight)
 
-        self.work_spin = QSpinBox(); self.work_spin.setRange(1, 600)
+        self.work_spin = SpinBox(); self.work_spin.setRange(1, 600)
         self.work_spin.setValue(app.durations["work"])
         self.work_spin.setSuffix(" min")
         form.addRow("Focus", self.work_spin)
 
-        self.short_spin = QSpinBox(); self.short_spin.setRange(1, 600)
+        self.short_spin = SpinBox(); self.short_spin.setRange(1, 600)
         self.short_spin.setValue(app.durations["short_break"])
         self.short_spin.setSuffix(" min")
         form.addRow("Short break", self.short_spin)
 
-        self.long_spin = QSpinBox(); self.long_spin.setRange(1, 600)
+        self.long_spin = SpinBox(); self.long_spin.setRange(1, 600)
         self.long_spin.setValue(app.durations["long_break"])
         self.long_spin.setSuffix(" min")
         form.addRow("Long break", self.long_spin)
 
-        self.f_spin = QSpinBox(); self.f_spin.setRange(0, 99)
+        self.f_spin = SpinBox(); self.f_spin.setRange(0, 99)
         self.f_spin.setValue(app.pattern_counts["focus"])
         form.addRow("Pattern · Focus count", self.f_spin)
 
-        self.s_spin = QSpinBox(); self.s_spin.setRange(0, 99)
+        self.s_spin = SpinBox(); self.s_spin.setRange(0, 99)
         self.s_spin.setValue(app.pattern_counts["short"])
         form.addRow("Pattern · Short count", self.s_spin)
 
-        self.l_spin = QSpinBox(); self.l_spin.setRange(0, 99)
+        self.l_spin = SpinBox(); self.l_spin.setRange(0, 99)
         self.l_spin.setValue(app.pattern_counts["long"])
         form.addRow("Pattern · Long count", self.l_spin)
 
-        self.scale_spin = QSpinBox(); self.scale_spin.setRange(50, 300)
+        self.scale_spin = SpinBox(); self.scale_spin.setRange(50, 300)
         self.scale_spin.setSingleStep(5)
         self.scale_spin.setValue(round(app.ui_scale * 100))
         self.scale_spin.setSuffix(" %")
@@ -1045,19 +1138,19 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        self.breaks_box = QCheckBox("Auto-start breaks after focus")
+        self.breaks_box = CheckBox("Auto-start breaks after focus")
         self.breaks_box.setChecked(app.auto_start_breaks)
         layout.addWidget(self.breaks_box)
 
-        self.chain_box = QCheckBox("Auto-start next focus after a break")
+        self.chain_box = CheckBox("Auto-start next focus after a break")
         self.chain_box.setChecked(app.chain_auto_start)
         layout.addWidget(self.chain_box)
 
-        self.sounds_box = QCheckBox("Play chimes")
+        self.sounds_box = CheckBox("Play chimes")
         self.sounds_box.setChecked(app.sounds_enabled)
         layout.addWidget(self.sounds_box)
 
-        self.notif_box = QCheckBox("Desktop notifications")
+        self.notif_box = CheckBox("Desktop notifications")
         self.notif_box.setChecked(app.notifications_enabled)
         layout.addWidget(self.notif_box)
 
@@ -1807,7 +1900,6 @@ class TemplatesDialog(QDialog):
     def __init__(self, app, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Templates")
-        self.setMinimumWidth(420)
         self.app = app
         self._build()
 
@@ -1830,7 +1922,14 @@ class TemplatesDialog(QDialog):
     def _build(self):
         v = QVBoxLayout(self)
         v.setSpacing(8)
+        # The layout, not the dialog, owns the minimum size. A minimum set on
+        # the dialog itself stops the layout from raising it, so a slot that
+        # gains its Load/Rename/× buttons was squeezed into the old width and
+        # its widgets overlapped until the dialog was reopened. 420 px stays
+        # the opening width; the layout raises it whenever a row needs more.
+        v.setSizeConstraint(QLayout.SetMinimumSize)
         self._populate(v)
+        self.resize(420, 0)
 
     def _populate(self, layout):
         """Fill the dialog body: one row per template slot, then Close.
@@ -1890,7 +1989,7 @@ class TemplatesDialog(QDialog):
     def _save_to(self, slot: int):
         if not self.app.sessions:
             QMessageBox.information(
-                self, "Empty", "Stack is empty — add a session first.")
+                self, "Empty", "Queue is empty — add a session first.")
             return
         slots = self._load()
         existing_name = (slots[slot]["name"] if slots[slot]
