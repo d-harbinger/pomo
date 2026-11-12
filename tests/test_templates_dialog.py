@@ -138,7 +138,7 @@ class TemplatesDialogActions(unittest.TestCase):
         self.win = pomo_qt.PomoWindow()
         self.win.sessions = [pomo_qt.Session(
             type="work", name="Focus", duration=25)]
-        patcher = mock.patch.object(pomo_qt, "tell")
+        patcher = mock.patch.object(pomo_qt.QMessageBox, "information")
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -158,7 +158,7 @@ class TemplatesDialogActions(unittest.TestCase):
         self.assertEqual(_row_names(layout)[1], "Template 2")
         self.assertEqual(self.saved()[1]["sessions"][0]["name"], "Focus")
 
-        with mock.patch.object(pomo_qt, "ask_text",
+        with mock.patch.object(pomo_qt.QInputDialog, "getText",
                                return_value=("Evening", True)):
             _click(layout, 1, "Rename")
         self.assertEqual(_row_names(layout)[1], "Evening")

@@ -346,9 +346,8 @@ def stylesheet() -> str:
 
 # ── Glass frosting ───────────────────────────────────────────────────────────
 #
-# Three ways to get a frosted window, picked once, for the main window (see
-# PomoWindow._apply_frost); every popup, dialog and menu copies that answer
-# (match_frost) and is translucent only when the main window is:
+# Three ways to get a frosted window, picked once per window (see
+# PomoWindow._apply_frost):
 #   "compositor"  X11 with a compositor: translucent window, the compositor
 #                 blurs what is behind it.
 #   "wayland"     Wayland: translucent window, the compositor decides on blur.
@@ -397,51 +396,6 @@ def frost_mode() -> str:
     if platform.startswith("wayland"):
         return "wayland"
     return "fake"
-
-
-def match_frost(window: QWidget, source: QWidget) -> QWidget:
-    """Give a top-level window the main window's frosting decision.
-
-    frost_mode() is asked once, by PomoWindow._apply_frost; every popup,
-    dialog and menu copies the answer from the window that opens it (which
-    copied it from the main window). Translucent only when the main window
-    is; otherwise opaque, filled with the stylesheet's THEME["dialog_bg"].
-    Call before the window is first shown, like _apply_frost.
-    """
-    translucent = source.window().testAttribute(Qt.WA_TranslucentBackground)
-    window.setAttribute(Qt.WA_TranslucentBackground, translucent)
-    window.setAutoFillBackground(not translucent)
-    return window
-
-
-def ask_text(parent: QWidget, title: str, label: str, text: str = ""):
-    """QInputDialog.getText, frosted like its parent. Returns (text, ok)."""
-    dlg = match_frost(QInputDialog(parent), parent)
-    dlg.setWindowTitle(title)
-    dlg.setLabelText(label)
-    dlg.setTextValue(text)
-    ok = dlg.exec() == QDialog.Accepted
-    return dlg.textValue(), ok
-
-
-def ask_int(parent: QWidget, title: str, label: str, value: int,
-            low: int, high: int):
-    """QInputDialog.getInt, frosted like its parent. Returns (value, ok)."""
-    dlg = match_frost(QInputDialog(parent), parent)
-    dlg.setWindowTitle(title)
-    dlg.setLabelText(label)
-    dlg.setInputMode(QInputDialog.IntInput)
-    dlg.setIntRange(low, high)
-    dlg.setIntValue(value)
-    ok = dlg.exec() == QDialog.Accepted
-    return dlg.intValue(), ok
-
-
-def tell(parent: QWidget, title: str, text: str):
-    """QMessageBox.information, frosted like its parent."""
-    box = QMessageBox(QMessageBox.Information, title, text,
-                      QMessageBox.Ok, parent)
-    match_frost(box, parent).exec()
 
 
 def parse_fehbg(text: str):
@@ -876,7 +830,6 @@ class AddSessionPopup(QDialog):
         self.setWindowFlags(
             Qt.Popup | Qt.FramelessWindowHint
             | Qt.NoDropShadowWindowHint)
-        match_frost(self, app)
         self._type = "work"  # default
 
         wrap = QFrame(self)
@@ -981,7 +934,6 @@ class PatternPopup(QDialog):
         self.setWindowFlags(
             Qt.Popup | Qt.FramelessWindowHint
             | Qt.NoDropShadowWindowHint)
-        match_frost(self, app)
         self.setObjectName("popup")
 
         wrap = QFrame(self)
@@ -1049,7 +1001,6 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Pomo Settings")
         self.setMinimumWidth(360)
-        match_frost(self, app)
         self.app = app
 
         layout = QVBoxLayout(self)
@@ -1474,7 +1425,8 @@ class PomoWindow(QMainWindow):
         return self.durations[self.session_type.value] * 60
 
     def prompt_add_focus(self):
-        text, ok = ask_text(self, "Add Focus", "What's your intent?")
+        text, ok = QInputDialog.getText(
+            self, "Add Focus", "What's your intent?")
         if ok and text.strip():
             self.add_focus(text.strip())
 
@@ -1579,7 +1531,7 @@ class PomoWindow(QMainWindow):
         if item is None:
             return
         idx = list_widget.row(item)
-        menu = match_frost(QMenu(self), self)
+        menu = QMenu(self)
         menu.addAction("Rename").triggered.connect(
             lambda: self._rename_index(idx))
         menu.addAction("Delete").triggered.connect(
@@ -1603,7 +1555,8 @@ class PomoWindow(QMainWindow):
         if not (0 <= idx < len(self.sessions)):
             return
         s = self.sessions[idx]
-        val, ok = ask_int(self, "Duration", "Minutes", s.duration, 1, 600)
+        val, ok = QInputDialog.getInt(
+            self, "Duration", "Minutes", s.duration, 1, 600)
         if ok:
             s.duration = val
             if idx == self.current_index:
@@ -1814,7 +1767,7 @@ class PomoWindow(QMainWindow):
     def _rename_index(self, idx: int):
         if not (0 <= idx < len(self.sessions)):
             return
-        text, ok = ask_text(
+        text, ok = QInputDialog.getText(
             self, "Rename", "Name", text=self.sessions[idx].name)
         if ok and text.strip():
             self.sessions[idx].name = text.strip()
@@ -1855,7 +1808,6 @@ class TemplatesDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Templates")
         self.setMinimumWidth(420)
-        match_frost(self, app)
         self.app = app
         self._build()
 
@@ -1937,7 +1889,8 @@ class TemplatesDialog(QDialog):
 
     def _save_to(self, slot: int):
         if not self.app.sessions:
-            tell(self, "Empty", "Stack is empty — add a session first.")
+            QMessageBox.information(
+                self, "Empty", "Stack is empty — add a session first.")
             return
         slots = self._load()
         existing_name = (slots[slot]["name"] if slots[slot]
@@ -1948,7 +1901,8 @@ class TemplatesDialog(QDialog):
                        "duration": s.duration})
         slots[slot] = {"name": existing_name, "sessions": ts}
         self._save(slots)
-        tell(self, "Saved", f"Saved to {existing_name}.")
+        QMessageBox.information(
+            self, "Saved", f"Saved to {existing_name}.")
         self._rebuild()
 
     def _load_from(self, slot: int):
@@ -1980,7 +1934,7 @@ class TemplatesDialog(QDialog):
         slots = self._load()
         if not slots[slot]:
             return
-        text, ok = ask_text(
+        text, ok = QInputDialog.getText(
             self, "Rename Template", "Name", text=slots[slot]["name"])
         if ok and text.strip():
             slots[slot]["name"] = text.strip()
