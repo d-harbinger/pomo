@@ -10,8 +10,6 @@ pomo is a pomodoro focus timer for the Linux desktop. The user builds a queue of
 - Internet access on first run, so `pip` can fetch PySide6 and Pillow.
 - Optional: a sound player (`paplay`, `aplay` or `play`) for the chimes and `notify-send` for desktop notifications. Without them the timer works and stays silent.
 
-The import chain was checked in an Arch Linux container: with only `python` installed, `./run.sh` stops with an `ImportError` for each missing library, and with `libglvnd`, `libxkbcommon` and `fontconfig` added the app starts on the offscreen Qt platform. The X11 helper libraries come from `ldd` on the Qt X11 plugin, not from a start under X11. The Debian package names are not checked.
-
 ## Run
 
 ```sh
