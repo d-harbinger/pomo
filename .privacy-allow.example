@@ -21,16 +21,20 @@
 #   Samsung FAKESERIAL00        # vendor-serial rule matches brand + serial...
 #   FAKESERIAL00                # ...and the bare-serial check matches just the serial
 #   noreply@example.com         # a known-safe address
+#   pdf-blob:<object id>        # one exact PDF version the guard cannot read, checked by eye
 #
 # Read by BOTH scripts/hooks/pre-commit and scripts/audit-privacy.sh, so the
 # commit gate and the history audit agree. For a match found by GITLEAKS inside
 # demo data instead, add it to [allowlist] in .gitleaks.toml.
 
-# The bundled ws_mount pattern (lib/patterns.sh) matches the workspace's own
-# mount paths. Those same literals appear in the privacy policy and these guard
-# docs as teaching examples — the guard flagging its own explanation. They are
-# generic, deprecated mount points (standardized to ~/Projects), not device
-# identifiers, so declare them by default. Scoped to the exact literals: a real
-# sensitive mount (e.g. /media/sf_*, /mnt/secrets) still fires.
-/mnt/Projects               # deprecated workspace mount, quoted as a doc example
-/mnt/shared                 # deprecated shared-folder mount, quoted as a doc example
+# Every line below is commented out, so copying this file to `.privacy-allow`
+# changes nothing until a line is uncommented. An uncommented line is an
+# allowlist entry: the guard stops flagging that exact value everywhere.
+#
+# Example: the bundled ws_mount pattern (lib/patterns.sh) flags workspace mount
+# paths. If a repo's docs quote these two literals as teaching examples,
+# uncommenting them stops the guard flagging its own explanation. Left commented, a staged
+# /mnt/Projects or /mnt/shared is still blocked. Exact literals only: a real
+# sensitive mount (e.g. /media/sf_*, /mnt/secrets) fires either way.
+# /mnt/Projects               # deprecated workspace mount, quoted as a doc example
+# /mnt/shared                 # deprecated shared-folder mount, quoted as a doc example

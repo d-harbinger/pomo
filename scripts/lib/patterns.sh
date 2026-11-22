@@ -192,3 +192,47 @@ pg_egress_extract() {
     | sed -E 's#^https?://##' \
     | sort -u
 }
+
+# ── PDF reader (commit hook and history audit) ───────────────────────────────
+# A PDF keeps its page text in compressed streams, so a line scan of its raw
+# bytes reads none of it and can report a clean result on a file it never saw.
+# Both scanners read the extracted text and metadata instead. A PDF that yields
+# no text, cannot be opened, or carries embedded files is refused until its exact
+# blob is declared in .privacy-allow as `pdf-blob:<object id>`. The declaration
+# names one version of one file, so changing the file brings the refusal back.
+
+# 0 when every tool the reader needs is on PATH.
+pg_pdf_tools_ready() {
+  command -v pdfinfo >/dev/null 2>&1 \
+    && command -v pdftotext >/dev/null 2>&1 \
+    && command -v pdfdetach >/dev/null 2>&1
+}
+
+# pg_pdf_extract <pdf> <output>: write metadata, then page text, to <output>.
+# Returns 0 read, 1 cannot be opened, 2 no text layer, 3 embedded files. Metadata
+# is written whenever it can be read, so it is still scanned for a declared blob.
+pg_pdf_extract() {
+  local pdf="$1" out="$2" attached
+  pdfinfo "$pdf" > "$out" 2>/dev/null || return 1
+  pdfinfo -meta "$pdf" >> "$out" 2>/dev/null || return 1
+  attached="$(pdfdetach -list "$pdf" 2>/dev/null)" || return 1
+  pdftotext -enc UTF-8 "$pdf" "$out.body" 2>/dev/null || { rm -f "$out.body"; return 1; }
+  tr -d '\000' < "$out.body" >> "$out"
+  if ! LC_ALL=C grep -aq '[[:alpha:]]' "$out.body"; then
+    rm -f "$out.body"
+    return 2
+  fi
+  rm -f "$out.body"
+  [ "${attached%% *}" = "0" ] || return 3
+  return 0
+}
+
+# Print why pg_pdf_extract refused a file.
+pg_pdf_problem() {
+  case "$1" in
+    1) printf 'cannot be opened (damaged or password-protected)' ;;
+    2) printf 'has no text layer (a scan), so its pages cannot be read' ;;
+    3) printf 'carries embedded files, which are not read' ;;
+    *) printf 'could not be read' ;;
+  esac
+}

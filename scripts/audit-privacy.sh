@@ -108,6 +108,16 @@ fi
 
 echo "${YELLOW}audit-privacy: scanning ${range:-full history} against ${#ALL_PATTERNS[@]} pattern(s)${SCOPE_NOTE}${RESET}"
 
+# Hook wiring check. The audit reads history; it does not run the commit hook,
+# so a clone with no active hook still audits clean. Warn, never fail: the exit
+# code stays a verdict on the scanned content alone.
+hooks_path="$(git config core.hooksPath 2>/dev/null || true)"
+if [ "$hooks_path" != "scripts/hooks" ]; then
+  echo "${YELLOW}audit-privacy: warning: core.hooksPath is '${hooks_path:-<unset>}', not 'scripts/hooks' — the commit hook is not active in this clone. Fix: git config core.hooksPath scripts/hooks${RESET}"
+elif [ ! -x "$repo_root/scripts/hooks/pre-commit" ]; then
+  echo "${YELLOW}audit-privacy: warning: core.hooksPath is 'scripts/hooks' but scripts/hooks/pre-commit is missing or not executable — the commit hook will not run. Fix: re-run install.sh --force${RESET}"
+fi
+
 # Self-match excludes — the scanner sources plus lib/patterns.sh (which now
 # holds the regex definitions) and the templates/ tree — are single-sourced
 # from lib/patterns.sh as PG_EXCLUDE_PATHS. The pre-commit hook reuses the same
@@ -136,14 +146,12 @@ _is_allowed() {  # exact match against a declared synthetic value
   local v="$1" a
   for a in "${ALLOW_VALUES[@]}"; do
     [ "$v" = "$a" ] && return 0
-    # A history match is extracted from a diff line, so it can carry the leading
-    # +/- marker: several patterns (the address one especially) accept "+" and
-    # "-" as value characters, so the marker is swallowed into the match and
-    # "+ci-bot@example.com" never equals the declared "ci-bot@example.com".
-    # Declared values then kept firing on every added line, forever, which is
-    # exactly the "a check that never clears teaches its reader to skip it"
-    # failure. Compared with the marker stripped as well as with it intact, so a
-    # value that genuinely begins with one is still matched on its own terms.
+    # Several patterns (the address one especially) accept "+" and "-" as value
+    # characters, so a sign written next to a value is swallowed into the match
+    # and "+ci-bot@example.com" never equals the declared "ci-bot@example.com".
+    # The history scan strips the diff marker before matching; this covers the
+    # same swallow anywhere else. Compared with the sign stripped as well as
+    # with it intact, so a value that genuinely begins with one still matches.
     [ "${v#[+-]}" = "$a" ] && return 0
   done
   return 1
@@ -152,37 +160,136 @@ _is_allowed() {  # exact match against a declared synthetic value
 # Read lines on stdin; print a line only if it still holds a match of $1 whose
 # value is NOT declared synthetic. A line whose every match is an allowed value
 # is dropped — the same per-value suppression the hook applies.
+#
+# Works from the set of distinct values, because a saved web page can be one
+# line of several megabytes and bash reads a pipe a byte at a time. A long line
+# prints as its start plus the text around the value.
 _filter_unallowed() {
-  local pat="$1" line v keep
-  while IFS= read -r line; do
-    keep=0
-    while IFS= read -r v; do
-      [ -z "$v" ] && continue
-      _is_allowed "$v" || { keep=1; break; }
-    done < <(printf '%s\n' "$line" | grep -Eo -- "$pat" 2>/dev/null)
-    [ "$keep" -eq 1 ] && printf '%s\n' "$line"
-  done
+  local pat="$1" v
+  cat > "$audit_tmp/filter.in"
+  : > "$audit_tmp/filter.values"
+  while IFS= read -r v; do
+    [ -z "$v" ] && continue
+    _is_allowed "$v" || printf '%s\n' "$v" >> "$audit_tmp/filter.values"
+  done < <(grep -aEo -- "$pat" "$audit_tmp/filter.in" 2>/dev/null | LC_ALL=C sort -u)
+  [ -s "$audit_tmp/filter.values" ] || return 0
+  grep -aF -f "$audit_tmp/filter.values" "$audit_tmp/filter.in" | LC_ALL=C awk '
+    NR == FNR { values[++n] = $0; next }
+    length($0) <= 300 { print; next }
+    {
+      for (i = 1; i <= n; i++) {
+        at = index($0, values[i])
+        if (at) {
+          from = at > 40 ? at - 40 : 1
+          print substr($0, 1, 80) " ... " substr($0, from, length(values[i]) + 80) " ..."
+          next
+        }
+      }
+    }
+  ' "$audit_tmp/filter.values" -
 }
 
 hits=0
+
+# PDFs: read each version in the scanned range once, as extracted text and
+# metadata. Their raw bytes are marked binary for this run, because they hold no
+# readable text and matching a regex across them can take many minutes per
+# pattern. See the PDF reader in lib/patterns.sh.
+audit_tmp="$(mktemp -d)"
+_audit_cleanup() { rm -rf "${audit_tmp:?}"; }
+trap _audit_cleanup EXIT
+mkdir "$audit_tmp/text"
+: > "$audit_tmp/records"
+printf '*.[pP][dD][fF] -diff\n' > "$audit_tmp/attributes"
+_git() { git -c core.attributesFile="$audit_tmp/attributes" "$@"; }
+
+if [ -n "$range" ]; then log_range=("$range"); else log_range=(--all); fi
+
+# History is written out once and searched with grep. Git's own regex engine is
+# quadratic on a long run of address characters, so a saved web page held the
+# address pattern for minutes. Every added or removed line is read, so a value
+# that moved or was swapped without changing its count is still seen. The leading
+# +/- diff marker is stripped: several patterns accept "+" and "-" as value
+# characters, so a marker could otherwise stand in for the part before the "@"
+# and a line reading "@name.dev" would be reported as an address.
+if ! _git log "${log_range[@]}" -p --unified=0 --pretty=format:'%n--- commit %h ---' -- "${PATHSPEC[@]}" > "$audit_tmp/history.raw" 2>/dev/null; then
+  echo "${RED}audit-privacy: could not read history for '${range:-all refs}'. Nothing was scanned.${RESET}" >&2
+  exit 2
+fi
+LC_ALL=C sed -E 's/^[+-]//' "$audit_tmp/history.raw" > "$audit_tmp/history"
+rm -f "$audit_tmp/history.raw"
+
+# Tracked files as they stand, searched with grep for the same reason.
+_tree_grep() {
+  git ls-files -z -- "${PATHSPEC[@]}" ':(exclude,icase)*.pdf' \
+    | xargs -0 -r env LC_ALL=C grep -InHE -e "$1" -- 2>/dev/null
+}
+
+declare -A PDF_BLOBS=()
+while IFS= read -r -d '' token; do
+  token="${token#$'\n'}"
+  case "$token" in :*) ;; *) continue ;; esac
+  IFS= read -r -d '' changed_path || break
+  case "${changed_path,,}" in *.pdf) ;; *) continue ;; esac
+  read -r _ _ _ blob _ <<<"$token"
+  case "$blob" in ''|*[!0]*) ;; *) continue ;; esac
+  [ -n "$blob" ] || continue
+  [ -n "${PDF_BLOBS[$blob]:-}" ] || PDF_BLOBS[$blob]="$changed_path"
+done < <(git -c core.quotePath=false log "${log_range[@]}" -m --no-renames --raw --no-abbrev --format= -z --diff-filter=ACMRT -- "${PATHSPEC[@]}" 2>/dev/null || true)
+
+if [ "${#PDF_BLOBS[@]}" -gt 0 ]; then
+  if ! pg_pdf_tools_ready; then
+    echo "${RED}audit-privacy: ${#PDF_BLOBS[@]} PDF version(s) cannot be read: install poppler (pdfinfo, pdftotext, pdfdetach).${RESET}"
+    hits=$((hits + 1))
+  else
+    pdf_n=0
+    pdf_refused=""
+    for blob in "${!PDF_BLOBS[@]}"; do
+      pdf_n=$((pdf_n + 1))
+      pdf_name="${PDF_BLOBS[$blob]}"
+      git cat-file blob "$blob" > "$audit_tmp/current.pdf"
+      pdf_text="$audit_tmp/text/$pdf_n-$(basename "$pdf_name" | cut -c1-100).txt"
+      pdf_rc=0
+      pg_pdf_extract "$audit_tmp/current.pdf" "$pdf_text" || pdf_rc=$?
+      if [ "$pdf_rc" -ne 0 ] && ! _is_allowed "pdf-blob:$blob"; then
+        pdf_refused="${pdf_refused}    ${pdf_name}: $(pg_pdf_problem "$pdf_rc")
+      pdf-blob:${blob}
+"
+      fi
+      if [ -f "$pdf_text" ]; then
+        PDF_NAME="$pdf_name (PDF text)" awk 'BEGIN { f = ENVIRON["PDF_NAME"] } { printf "%s:%d:%s\n", f, NR, $0 }' "$pdf_text" >> "$audit_tmp/records"
+      fi
+    done
+    rm -f "$audit_tmp/current.pdf"
+    echo "${YELLOW}audit-privacy: read ${#PDF_BLOBS[@]} PDF version(s) as text${RESET}"
+    if [ -n "$pdf_refused" ]; then
+      echo ""
+      echo "${RED}PDFs that could not be fully read:${RESET}"
+      printf '%s' "$pdf_refused"
+      echo "${YELLOW}  After checking a file by eye, declare its pdf-blob: line in .privacy-allow.${RESET}"
+      hits=$((hits + 1))
+    fi
+  fi
+fi
+
 for pat in "${ALL_PATTERNS[@]}"; do
   # Step 1: check the current tree. Findings here have a different fix path
-  # (edit the file + commit) than history-only findings. git grep scans only
-  # TRACKED files (so vendored trees like node_modules are skipped) and honors
-  # the same EXCLUDE_PATHS pathspecs as the history scan below — including
-  # whatever .privacy-allow declared.
-  current_matches="$(git grep -nE -e "$pat" -- "${PATHSPEC[@]}" 2>/dev/null | _filter_unallowed "$pat" || true)"
+  # (edit the file + commit) than history-only findings. Only TRACKED files are
+  # read (so vendored trees like node_modules are skipped), under the same
+  # EXCLUDE_PATHS pathspecs as the history scan.
+  current_matches="$(_tree_grep "$pat" | _filter_unallowed "$pat" || true)"
+  pdf_matches="$(LC_ALL=C grep -aE -- "$pat" "$audit_tmp/records" | _filter_unallowed "$pat" || true)"
 
-  # Step 2: scan history.
-  if [ -n "$range" ]; then
-    history_matches="$(git log "$range" -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${PATHSPEC[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
-  else
-    history_matches="$(git log --all -p --pickaxe-regex -S "$pat" --pretty=format:'%n--- commit %h ---' -- "${PATHSPEC[@]}" 2>/dev/null | grep -E -- "$pat" | _filter_unallowed "$pat" || true)"
-  fi
+  # Step 2: scan the history written out above.
+  history_matches="$(LC_ALL=C grep -aE -- "$pat" "$audit_tmp/history" | _filter_unallowed "$pat" || true)"
 
-  if [ -n "$current_matches" ] || [ -n "$history_matches" ]; then
+  if [ -n "$current_matches" ] || [ -n "$history_matches" ] || [ -n "$pdf_matches" ]; then
     echo ""
     echo "${RED}Pattern: ${pat}${RESET}"
+    if [ -n "$pdf_matches" ]; then
+      echo "${YELLOW}  in PDF text or metadata:${RESET}"
+      printf '%s\n' "$pdf_matches" | head -10 | sed 's/^/    /'
+    fi
     if [ -n "$current_matches" ]; then
       echo "${YELLOW}  in current source (fix: edit the file + commit):${RESET}"
       printf '%s\n' "$current_matches" | head -10 | sed 's/^/    /'
@@ -211,9 +318,17 @@ if command -v gitleaks >/dev/null 2>&1; then
     echo "${RED}gitleaks: secrets detected (see above).${RESET}"
     hits=$((hits + 1))
   fi
+  if [ "${#PDF_BLOBS[@]}" -gt 0 ] && pg_pdf_tools_ready; then
+    if gitleaks detect --no-git --source "$audit_tmp/text" --redact --verbose --no-banner --config="$repo_root/.gitleaks.toml"; then
+      echo "${GREEN}gitleaks on PDF text: clean${RESET}"
+    else
+      echo "${RED}gitleaks on PDF text: secrets detected (see above; the file is the PDF's number and name).${RESET}"
+      hits=$((hits + 1))
+    fi
+  fi
 else
   echo "${RED}gitleaks not installed — full-history secret scan skipped. Install it:${RESET}"
-  echo "  CachyOS / Arch: paru -S gitleaks   (or: sudo pacman -S gitleaks)"
+  echo "  Arch / CachyOS: sudo pacman -S gitleaks"
   echo "  Mint / Debian:  https://github.com/gitleaks/gitleaks/releases (linux_x64.tar.gz)"
   hits=$((hits + 1))
 fi

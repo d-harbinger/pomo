@@ -67,17 +67,22 @@ repo_root="$(git rev-parse --show-toplevel)"
 # curate, and the damage it prevents is the only kind that cannot be undone by
 # editing a file and committing again.
 # ----------------------------------------------------------------------------
-identity_allow_file="$repo_root/.identity-allow"
+#
+# Repo-wide declarations (.identity-allow, .privacy-allow, .egress-allow) are
+# read from the INDEX (`git show :<file>`), never the working tree. A declaration
+# that exists only in one clone's working tree is not a declaration the other
+# clones receive; reading it would let a commit through on an entry nobody else
+# has. A file absent from the index means no declarations (fail closed).
+_staged_decl() { git show ":$1" 2>/dev/null || true; }
+
 IDENTITY_ALLOW=('*@users.noreply.github.com')
-if [ -f "$identity_allow_file" ]; then
-  while IFS= read -r raw; do
-    line="${raw%%#*}"                          # strip inline comment
-    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
-    line="${line%"${line##*[![:space:]]}"}"    # rtrim
-    [ -z "$line" ] && continue
-    IDENTITY_ALLOW+=("$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')")
-  done < "$identity_allow_file"
-fi
+while IFS= read -r raw; do
+  line="${raw%%#*}"                          # strip inline comment
+  line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+  line="${line%"${line##*[![:space:]]}"}"    # rtrim
+  [ -z "$line" ] && continue
+  IDENTITY_ALLOW+=("$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')")
+done < <(_staged_decl .identity-allow)
 
 _identity_allowed() {
   local addr pat
@@ -116,7 +121,8 @@ if [ -n "$identity_violations" ]; then
   printf '%s\n' "${YELLOW}The address is shown at github.com/settings/emails (Keep my email private).${RESET}"
   printf '%s\n' "${YELLOW}Check for a per-repo override that beats the global:${RESET}  git config --local user.email"
   printf '%s\n' "${YELLOW}If this repo genuinely commits under another identity, declare it in${RESET}"
-  printf '%s\n' "${YELLOW}.identity-allow (one address or *@domain per line), then re-commit.${RESET}"
+  printf '%s\n' "${YELLOW}.identity-allow (one address or *@domain per line), run  git add .identity-allow  and re-commit.${RESET}"
+  printf '%s\n' "${YELLOW}Only the staged or committed file counts; an unstaged edit is ignored.${RESET}"
   exit 1
 fi
 
@@ -148,17 +154,14 @@ EXCLUDE_PATHS=( "${PG_EXCLUDE_PATHS[@]}" )
 # path: scan everything, then suppress a finding ONLY when the matched text is
 # exactly a declared synthetic value. An unknown identifier in any path —
 # fixtures included — still fires. Trust a string, never a location.
-allow_file="$repo_root/.privacy-allow"
 ALLOW_VALUES=()
-if [ -f "$allow_file" ]; then
-  while IFS= read -r raw; do
-    line="${raw%%#*}"                          # strip inline comment
-    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
-    line="${line%"${line##*[![:space:]]}"}"    # rtrim
-    [ -z "$line" ] && continue
-    ALLOW_VALUES+=("$line")
-  done < "$allow_file"
-fi
+while IFS= read -r raw; do
+  line="${raw%%#*}"                          # strip inline comment
+  line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+  line="${line%"${line##*[![:space:]]}"}"    # rtrim
+  [ -z "$line" ] && continue
+  ALLOW_VALUES+=("$line")
+done < <(_staged_decl .privacy-allow)
 
 # Suppress a finding only if the matched text EXACTLY equals a declared value.
 # Exact, not substring: declaring a demo "AKIA…" key must not silently allow a
@@ -169,19 +172,126 @@ _is_allowed() {
   return 1
 }
 
+# Staged PDFs, found by content so a renamed one is still read. Their raw bytes
+# are compressed, so they leave the line scan below and their extracted text and
+# metadata join it instead. See the PDF reader in lib/patterns.sh.
+pdf_tmp="$(mktemp -d)"
+_pdf_cleanup() { rm -rf "${pdf_tmp:?}"; }
+trap _pdf_cleanup EXIT
+
+PDF_PATHS=()
+PDF_EXCLUDES=()
+# git grep exits 1 for no match. Anything higher is a failed search, which must
+# never read as "no PDFs staged".
+if ! git -c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMRTU -- "${EXCLUDE_PATHS[@]}" \
+  | xargs -0 -r sh -c 'git --literal-pathspecs grep --cached -alz -e "%PDF-" -- "$@"; [ "$?" -le 1 ] || exit 255' sh \
+  > "$pdf_tmp/candidates"; then
+  printf '%s\n' "${RED}--- pre-commit privacy guard: the search for staged PDFs failed ---${RESET}"
+  exit 1
+fi
+while IFS= read -r -d '' f; do
+  # A header starts a line. Source code that merely quotes one is not a PDF.
+  if git cat-file blob ":$f" 2>/dev/null | head -c 1024 | grep -aq '^%PDF-[0-9]'; then
+    PDF_PATHS+=("$f")
+    PDF_EXCLUDES+=(":(exclude,literal)$f")
+  fi
+done < "$pdf_tmp/candidates"
+
+if [ "${#PDF_PATHS[@]}" -gt 0 ]; then
+  if ! pg_pdf_tools_ready; then
+    printf '%s\n' "${RED}--- pre-commit privacy guard: a staged PDF cannot be read ---${RESET}"
+    printf '  %s\n' "${PDF_PATHS[@]}"
+    printf '%s\n' "${YELLOW}Reading PDFs needs pdfinfo, pdftotext and pdfdetach. Install poppler once:${RESET}"
+    printf '%s\n' "  Arch / CachyOS:   sudo pacman -S poppler"
+    printf '%s\n' "  Fedora:           sudo dnf install poppler-utils"
+    printf '%s\n' "  Mint / Debian:    sudo apt install poppler-utils"
+    exit 1
+  fi
+  mkdir "$pdf_tmp/text"
+  pdf_problems=""
+  pdf_declare=""
+  pdf_n=0
+  for f in "${PDF_PATHS[@]}"; do
+    pdf_n=$((pdf_n + 1))
+    pdf_blob="$(git rev-parse ":$f")"
+    git cat-file blob "$pdf_blob" > "$pdf_tmp/$pdf_n.pdf"
+    pdf_text="$pdf_tmp/text/$pdf_n-$(basename "$f" | cut -c1-100).txt"
+    pdf_rc=0
+    pg_pdf_extract "$pdf_tmp/$pdf_n.pdf" "$pdf_text" || pdf_rc=$?
+    rm -f "$pdf_tmp/$pdf_n.pdf"
+    if [ "$pdf_rc" -ne 0 ] && ! _is_allowed "pdf-blob:$pdf_blob"; then
+      pdf_problems="${pdf_problems}  ${f}: $(pg_pdf_problem "$pdf_rc")
+"
+      pdf_declare="${pdf_declare}  pdf-blob:${pdf_blob}
+"
+    fi
+    printf '%s\t0\t%s\n' "$f" "$f" >> "$pdf_tmp/records"
+    if [ -f "$pdf_text" ]; then
+      PDF_NAME="$f (PDF text)" awk 'BEGIN { f = ENVIRON["PDF_NAME"] } { printf "%s\t%d\t%s\n", f, NR, $0 }' "$pdf_text" >> "$pdf_tmp/records"
+    fi
+  done
+  if [ -n "$pdf_problems" ]; then
+    printf '%s\n' "${RED}--- pre-commit privacy guard: a staged PDF cannot be fully read ---${RESET}"
+    printf '%s\n' "$pdf_problems"
+    printf '%s\n' "${YELLOW}Open the file and confirm it holds no identifier. To accept this exact version,${RESET}"
+    printf '%s\n' "${YELLOW}add to .privacy-allow:${RESET}"
+    printf '%s' "$pdf_declare"
+    printf '%s\n' "${YELLOW}then run  git add .privacy-allow  and re-commit. Only the staged or committed file counts.${RESET}"
+    exit 1
+  fi
+fi
+
 # Keep every added line (`^+`), then strip exactly one leading '+' so the diff
 # prefix is gone but content that legitimately starts with '+' is preserved,
 # and ^-anchored patterns (e.g. the ADB device-serial) match real content. The
 # old `^\+[^+]` filter silently dropped added lines whose content began with
 # '+' (rendered `++…` in the diff), letting a leak on such a line slip past.
-staged_added="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" \
-  | grep -E '^\+' | sed 's/^+//' || true)"
+#
+# The diff is also read into file<TAB>line<TAB>content records, so a block can
+# name where each match sits. Inside a hunk every '+' line is content; the
+# `+++ b/<path>` header is only read before the first hunk of a file.
+#
+# NUL bytes are dropped first: a file can hold one past git's 8000-byte binary
+# check and still arrive here as a text diff.
+staged_loc="$(git -c core.quotePath=false diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" "${PDF_EXCLUDES[@]}" | tr -d '\000' | awk '
+  /^diff --git / { inhunk = 0; next }
+  !inhunk && /^\+\+\+ / {
+    p = substr($0, 5)
+    sub(/\t.*$/, "", p)                       # a name with a space ends the header with a tab
+    if (p ~ /^".*"$/) p = substr(p, 2, length(p) - 2)
+    if (p == "/dev/null") { f = ""; next }
+    sub(/^b\//, "", p); f = p
+    # The file NAME is scanned too (record line 0), as the plain diff scan did.
+    printf "%s\t0\t%s\n", f, f
+    next
+  }
+  /^@@ / { inhunk = 1; s = $3; sub(/^\+/, "", s); sub(/,.*/, "", s); n = s + 0; next }
+  inhunk && /^\+/ { printf "%s\t%d\t%s\n", f, n, substr($0, 2); n++ }
+' || true)"
+if [ -f "$pdf_tmp/records" ]; then
+  staged_loc="${staged_loc}
+$(cat "$pdf_tmp/records")"
+fi
+staged_added="$(printf '%s\n' "$staged_loc" | cut -f3- || true)"
 
 if [ -z "$staged_added" ]; then
   exit 0
 fi
 
+# Where a matched value sits: "file:line" for up to five lines, "…" if more.
+_locate() {
+  V="$1" awk -F'\t' '
+    BEGIN { v = ENVIRON["V"] }
+    NF >= 3 {
+      c = $0; sub(/^[^\t]*\t[^\t]*\t/, "", c)
+      if (index(c, v)) { n++; if (n <= 5) out = out (out ? ", " : "") ($2 == 0 ? $1 " (file name)" : $1 ":" $2) }
+    }
+    END { if (n > 5) out = out ", ..."; print out }
+  ' <<<"$staged_loc"
+}
+
 violations=""
+allow_lines=""
 for pat in "${ALL_PATTERNS[@]}"; do
   # Case-SENSITIVE (no -i). The patterns encode their own case (AKIA, IMEI,
   # Samsung, PEM headers); -i made the device-serial rule over-match ordinary
@@ -194,8 +304,11 @@ for pat in "${ALL_PATTERNS[@]}"; do
     [ -z "$m" ] && continue
     _is_allowed "$m" && continue
     violations="${violations}${RED}Pattern matched:${RESET} ${YELLOW}${pat}${RESET}  ->  ${m}
+  at $(_locate "$m")
 "
-  done < <(printf '%s\n' "$staged_added" | grep -Eo -- "$pat" | sort -u || true)
+    allow_lines="${allow_lines}${m}
+"
+  done < <(printf '%s\n' "$staged_added" | grep -aEo -- "$pat" | sort -u || true)
 done
 
 # --- Tightened bare-serial check (commit-stage) ---------------------------
@@ -214,19 +327,30 @@ while IFS= read -r tok; do
   _is_allowed "$tok" && continue           # declared synthetic value? skip
   serial_hits="${serial_hits}  ${tok}
 "
-done < <(printf '%s\n' "$staged_added" | grep -Eo '\b[A-Z0-9]{10,14}\b' | sort -u)
+done < <(printf '%s\n' "$staged_added" | grep -aEo '\b[A-Z0-9]{10,14}\b' | sort -u)
 if [ -n "$serial_hits" ]; then
+  serial_located=""
+  while IFS= read -r tok; do
+    [ -z "$tok" ] && continue
+    tok="${tok#"${tok%%[![:space:]]*}"}"
+    serial_located="${serial_located}  ${tok}  at $(_locate "$tok")
+"
+    allow_lines="${allow_lines}${tok}
+"
+  done <<<"$serial_hits"
   violations="${violations}${RED}Pattern matched:${RESET} ${YELLOW}bare device serial (10-14 uppercase, digit + non-hex letter)${RESET}
-$serial_hits
+$serial_located
 "
 fi
 
 if [ -n "$violations" ]; then
   printf '%s\n' "${RED}--- pre-commit privacy guard: staged content matches sensitive patterns ---${RESET}"
   printf '%s\n' "$violations"
-  printf '%s\n' "${YELLOW}If a match is a false positive, you can bypass once with:${RESET}"
-  printf '%s\n' "  git commit --no-verify"
-  printf '%s\n' "${YELLOW}If a match is real, edit the staged file to remove the identifier, then re-stage and re-commit.${RESET}"
+  printf '%s\n' "${YELLOW}If a match is real, edit the file to remove the identifier, then re-stage and re-commit.${RESET}"
+  printf '%s\n' "${YELLOW}If a match is a false positive, declare the exact value in .privacy-allow${RESET}"
+  printf '%s\n' "${YELLOW}(committed, one literal value per line). Add:${RESET}"
+  printf '%s' "$allow_lines" | sort -u | sed 's/^/  /'
+  printf '%s\n' "${YELLOW}then run  git add .privacy-allow  and re-commit. Only the staged or committed file counts.${RESET}"
   exit 1
 fi
 
@@ -246,26 +370,34 @@ fi
 # to its .egress-allow (do that once the allowlist is trustworthy). The broad
 # URL scan intentionally errs toward noise; enforcing before curation would
 # wall off editing legitimate URL DATA (bookmarks, citations, feed lists).
-egress_allow_file="$repo_root/.egress-allow"
 EGRESS_ALLOW=()
 EGRESS_ENFORCE=0
-if [ -f "$egress_allow_file" ]; then
-  while IFS= read -r raw; do
-    line="${raw%%#*}"                          # strip inline comment
-    line="${line#"${line%%[![:space:]]*}"}"    # ltrim
-    line="${line%"${line##*[![:space:]]}"}"    # rtrim
-    [ -z "$line" ] && continue
-    line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
-    if [ "$line" = "enforce" ]; then EGRESS_ENFORCE=1; continue; fi  # mode directive, not a host
-    EGRESS_ALLOW+=("$line")
-  done < "$egress_allow_file"
-fi
+while IFS= read -r raw; do
+  line="${raw%%#*}"                          # strip inline comment
+  line="${line#"${line%%[![:space:]]*}"}"    # ltrim
+  line="${line%"${line##*[![:space:]]}"}"    # rtrim
+  [ -z "$line" ] && continue
+  line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+  if [ "$line" = "enforce" ]; then EGRESS_ENFORCE=1; continue; fi  # mode directive, not a host
+  EGRESS_ALLOW+=("$line")
+done < <(_staged_decl .egress-allow)
+
+# `enforce` only tightens, so a commit that deletes it (git rm --cached) or a
+# failed index read cannot turn enforcement off: the committed HEAD copy counts
+# too. Host declarations still come from the staged file only.
+while IFS= read -r raw; do
+  line="${raw%%#*}"
+  line="${line#"${line%%[![:space:]]*}"}"
+  line="${line%"${line##*[![:space:]]}"}"
+  line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+  [ "$line" = "enforce" ] && EGRESS_ENFORCE=1
+done < <(git show HEAD:.egress-allow 2>/dev/null || true)
 
 # Staged added CODE lines: the identifier excludes PLUS prose/doc files.
-staged_code="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" \
+staged_code="$(git diff --cached --unified=0 -- "${EXCLUDE_PATHS[@]}" "${PDF_EXCLUDES[@]}" \
   ':(exclude)*.md' ':(exclude)*.markdown' ':(exclude)*.rst' ':(exclude)*.txt' \
   ':(exclude)*README*' ':(exclude)*CHANGELOG*' ':(exclude)*LICENSE*' \
-  | grep -E '^\+' | sed 's/^+//' || true)"
+  | tr -d '\000' | grep -aE '^\+' | sed 's/^+//' || true)"
 
 if [ -n "$staged_code" ]; then
   egress_hits=""
@@ -287,7 +419,8 @@ if [ -n "$staged_code" ]; then
       printf '%s\n' "${YELLOW}Not a universal safe-default, and not declared in .egress-allow:${RESET}"
       printf '%s\n' "$egress_hits"
       printf '%s\n' "${YELLOW}Prefer a same-origin / self-hosted alternative when one exists (the mission default).${RESET}"
-      printf '%s\n' "${YELLOW}If this egress is intended, add the host to .egress-allow (one per line), then re-commit.${RESET}"
+      printf '%s\n' "${YELLOW}If this egress is intended, add the host to .egress-allow (one per line), run  git add .egress-allow  and re-commit.${RESET}"
+      printf '%s\n' "${YELLOW}Only the staged or committed .egress-allow counts; an unstaged edit is ignored.${RESET}"
       printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
       exit 1
     else
@@ -313,8 +446,7 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks not installed ---${RESET}"
   printf '%s\n' "${YELLOW}gitleaks is required by this repo's privacy guard. Install it once:${RESET}"
   printf '%s\n' ""
-  printf '%s\n' "  CachyOS / Arch (recommended):  paru -S gitleaks"
-  printf '%s\n' "                                 sudo pacman -S gitleaks  # if you don't use paru"
+  printf '%s\n' "  Arch / CachyOS:  sudo pacman -S gitleaks"
   printf '%s\n' "  Mint / Debian / Ubuntu:        download the latest gitleaks_*_linux_x64.tar.gz from"
   printf '%s\n' "                                 https://github.com/gitleaks/gitleaks/releases and"
   printf '%s\n' "                                 install the 'gitleaks' binary on PATH."
@@ -349,9 +481,10 @@ fi
 
 # `protect --staged` scans the staged index, not the working tree. --redact
 # replaces the secret value in the report with [REDACTED] so the secret itself
-# is never written to terminal scrollback. --no-banner suppresses the ASCII
-# logo on every run.
-if ! gitleaks protect --staged --redact --no-banner --config="$gl_config" 2>&1; then
+# is never written to terminal scrollback. --verbose prints each finding's rule,
+# file and line; without it the output is only "leaks found: N". --no-banner
+# suppresses the ASCII logo on every run.
+if ! gitleaks protect --staged --redact --verbose --no-banner --config="$gl_config" 2>&1; then
   printf '%s\n' ""
   printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks found one or more secrets ---${RESET}"
   printf '%s\n' "${YELLOW}If a match is a real secret:${RESET}  remove it from the staged file, re-stage, re-commit."
@@ -359,6 +492,16 @@ if ! gitleaks protect --staged --redact --no-banner --config="$gl_config" 2>&1; 
   printf '%s\n' "${YELLOW}                                ${RESET}(see comments in that file for the regex/path format)."
   printf '%s\n' "${YELLOW}Bypass once for an unrelated emergency:${RESET}  git commit --no-verify"
   exit 1
+fi
+
+# The staged scan above sees a PDF's compressed bytes; this one sees its text.
+if [ -d "$pdf_tmp/text" ]; then
+  if ! gitleaks detect --no-git --source "$pdf_tmp/text" --redact --verbose --no-banner --config="$gl_config" 2>&1; then
+    printf '%s\n' ""
+    printf '%s\n' "${RED}--- pre-commit privacy guard: gitleaks found a secret in a staged PDF's text ---${RESET}"
+    printf '%s\n' "${YELLOW}The file named above is the PDF's number and name. Remove the secret, re-stage, re-commit.${RESET}"
+    exit 1
+  fi
 fi
 
 exit 0
